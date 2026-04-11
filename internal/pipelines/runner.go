@@ -20,6 +20,13 @@ type Runner struct {
 	Log      *Logger
 }
 
+// RunOptions controls which phases of the pipeline to execute.
+type RunOptions struct {
+	Build       bool
+	Deploy      bool
+	BuildNumber string
+}
+
 // NewRunner creates a fully wired Runner for the given config and mode.
 // A single Masker instance is shared across all layers to prevent secret leaks.
 // The workdir is used as the base directory for all artifact commands.
@@ -35,13 +42,6 @@ func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 		Provider: &ProviderResolver{Log: log, Masker: masker},
 		Log:      log,
 	}
-}
-
-// RunOptions controls which phases of the pipeline to execute.
-type RunOptions struct {
-	Build       bool
-	Deploy      bool
-	BuildNumber string
 }
 
 // Run executes the pipeline for the specified environment.
@@ -62,14 +62,14 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 	r.resolveProviders(envName, opts)
 
 	if opts.Build {
-		if err := r.processArtifacts(ctx, env, opts); err != nil {
+		if err := r.runBuildPhase(ctx, env, opts); err != nil {
 			r.printFailure(start, err)
 			return err
 		}
 	}
 
 	if opts.Deploy {
-		if err := r.processDeploy(ctx, envName, env); err != nil {
+		if err := r.runDeployPhase(ctx, envName, env); err != nil {
 			r.printFailure(start, err)
 			return err
 		}
@@ -108,24 +108,6 @@ func (r *Runner) printHeader(envName string, env *Environment, opts RunOptions) 
 	r.Log.Separator()
 }
 
-func (r *Runner) processRepoPreRun(ctx context.Context, name string, repo *Repository, workdir string) error {
-	if len(repo.PreRun) == 0 {
-		return nil
-	}
-
-	r.Log.Info(fmt.Sprintf("pre-run for %s repository", name))
-
-	for i, s := range repo.PreRun {
-		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(repo.PreRun), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
-		args := r.Commands.BuildStepCommand(&s)
-		if err := r.Executor.Run(ctx, args, workdir); err != nil {
-			return fmt.Errorf("pre-run step %d for %s failed: %w", i+1, name, err)
-		}
-	}
-
-	return nil
-}
-
 func (r *Runner) resolveProviders(envName string, opts RunOptions) {
 	r.Log.Step("Resolving providers")
 
@@ -137,6 +119,9 @@ func (r *Runner) resolveProviders(envName string, opts RunOptions) {
 	}
 
 	// Inject NITRO_ reserved variables.
+	vars["NITRO_ENV"] = envName
+	r.Log.Info(fmt.Sprintf("NITRO_ENV = %s", envName))
+
 	if opts.BuildNumber != "" {
 		vars["NITRO_BUILD_NUMBER"] = opts.BuildNumber
 		r.Log.Info(fmt.Sprintf("NITRO_BUILD_NUMBER = %s", opts.BuildNumber))
@@ -144,6 +129,31 @@ func (r *Runner) resolveProviders(envName string, opts RunOptions) {
 
 	r.Executor.SetEnv(vars)
 	r.Log.Separator()
+}
+
+// ── Build Phase ──────────────────────────────────────
+
+func (r *Runner) runBuildPhase(ctx context.Context, env *Environment, opts RunOptions) error {
+	// Build preRun.
+	if env.Build != nil {
+		if err := r.runHooks(ctx, "Build pre-run", env.Build.PreRun); err != nil {
+			return err
+		}
+	}
+
+	// Build artifacts.
+	if err := r.processArtifacts(ctx, env, opts); err != nil {
+		return err
+	}
+
+	// Build postRun.
+	if env.Build != nil {
+		if err := r.runHooks(ctx, "Build post-run", env.Build.PostRun); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (r *Runner) processArtifacts(ctx context.Context, env *Environment, opts RunOptions) error {
@@ -169,14 +179,21 @@ func (r *Runner) processArtifacts(ctx context.Context, env *Environment, opts Ru
 func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, env *Environment, opts RunOptions) error {
 	r.Log.Step(fmt.Sprintf("%s (%s)", name, art.Type))
 
+	workdir := r.resolveWorkdir(art)
+
+	// Artifact preRun.
+	if err := r.runHooks(ctx, fmt.Sprintf("%s pre-run", name), art.PreRun); err != nil {
+		return err
+	}
+
 	var err error
 	switch {
 	case art.IsDocker():
-		err = r.runDocker(ctx, art, env, opts)
+		err = r.runDocker(ctx, art, env, opts, workdir)
 	case art.IsBinary():
-		err = r.runBuild(ctx, art)
+		err = r.runBinaryBuild(ctx, art, workdir)
 	case art.IsPackage():
-		err = r.runPackage(ctx, art)
+		err = r.runPackage(ctx, art, workdir)
 	default:
 		r.Log.Info(fmt.Sprintf("unknown artifact type: %s", art.Type))
 	}
@@ -185,34 +202,29 @@ func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, en
 		return err
 	}
 
+	// Artifact postRun.
+	if err := r.runHooks(ctx, fmt.Sprintf("%s post-run", name), art.PostRun); err != nil {
+		return err
+	}
+
 	r.Log.Separator()
 	return nil
 }
 
-func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment, opts RunOptions) error {
+func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment, opts RunOptions, workdir string) error {
 	if env.IsPromote() {
 		r.Log.Promote(fmt.Sprintf("promoting %s from %s", art.Repository.FullImage(), env.PromotesFrom))
 		return nil
 	}
 
-	workdir := r.resolveWorkdir(art)
 	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
-
-	if err := r.processRepoPreRun(ctx, art.Repository.FullImage(), &art.Repository, workdir); err != nil {
-		return err
-	}
 
 	args := r.Commands.DockerBuild(art, opts.BuildNumber)
 	return r.Executor.Run(ctx, args, workdir)
 }
 
-func (r *Runner) runBuild(ctx context.Context, art *Artifact) error {
-	workdir := r.resolveWorkdir(art)
+func (r *Runner) runBinaryBuild(ctx context.Context, art *Artifact, workdir string) error {
 	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
-
-	if err := r.processRepoPreRun(ctx, art.Repository.Path, &art.Repository, workdir); err != nil {
-		return err
-	}
 
 	for i, s := range art.Build {
 		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(art.Build), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
@@ -229,13 +241,8 @@ func (r *Runner) runBuild(ctx context.Context, art *Artifact) error {
 	return nil
 }
 
-func (r *Runner) runPackage(ctx context.Context, art *Artifact) error {
-	workdir := r.resolveWorkdir(art)
+func (r *Runner) runPackage(ctx context.Context, art *Artifact, workdir string) error {
 	r.Log.Info(fmt.Sprintf("workdir: %s | language: %s", workdir, art.Language))
-
-	if err := r.processRepoPreRun(ctx, art.Repository.URL, &art.Repository, workdir); err != nil {
-		return err
-	}
 
 	for i, s := range art.Build {
 		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(art.Build), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
@@ -249,11 +256,19 @@ func (r *Runner) runPackage(ctx context.Context, art *Artifact) error {
 	return nil
 }
 
-func (r *Runner) processDeploy(ctx context.Context, envName string, env *Environment) error {
+// ── Deploy Phase ─────────────────────────────────────
+
+func (r *Runner) runDeployPhase(ctx context.Context, envName string, env *Environment) error {
 	if env.Deploy == nil {
 		return nil
 	}
 
+	// Deploy preRun.
+	if err := r.runHooks(ctx, "Deploy pre-run", env.Deploy.PreRun); err != nil {
+		return err
+	}
+
+	// Deploy.
 	r.Log.Step(fmt.Sprintf("deploy --> %s", envName))
 
 	var err error
@@ -270,8 +285,37 @@ func (r *Runner) processDeploy(ctx context.Context, envName string, env *Environ
 	}
 
 	r.Log.Separator()
+
+	// Deploy postRun.
+	if err := r.runHooks(ctx, "Deploy post-run", env.Deploy.PostRun); err != nil {
+		return err
+	}
+
 	return nil
 }
+
+// ── Hooks ────────────────────────────────────────────
+
+func (r *Runner) runHooks(ctx context.Context, label string, steps []BuildStep) error {
+	if len(steps) == 0 {
+		return nil
+	}
+
+	r.Log.Step(label)
+
+	for i, s := range steps {
+		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
+		args := r.Commands.BuildStepCommand(&s)
+		if err := r.Executor.Run(ctx, args, r.Workdir); err != nil {
+			return fmt.Errorf("%s step %d failed: %w", label, i+1, err)
+		}
+	}
+
+	r.Log.Separator()
+	return nil
+}
+
+// ── Footer ───────────────────────────────────────────
 
 func (r *Runner) printFooter(start time.Time) {
 	elapsed := time.Since(start).Round(time.Millisecond)

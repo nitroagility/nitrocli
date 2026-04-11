@@ -28,11 +28,36 @@ func (c *Config) ArtifactNames() []string {
 
 // Provider represents an external secrets/config provider.
 type Provider struct {
-	Type      string     `json:"type"`
-	Priority  int        `json:"priority"`
-	URL       string     `json:"url"`
-	Envs      []string   `json:"envs"`
-	Variables []Variable `json:"variables"`
+	Type       string              `json:"type"`
+	Priority   int                 `json:"priority"`
+	URL        string              `json:"url,omitempty"`
+	Envs       []string            `json:"envs"`
+	Variables  []Variable          `json:"variables,omitempty"`
+	Composites []CompositeVariable `json:"composites,omitempty"`
+}
+
+// CompositeVariable concatenates multiple resolved variables into one value.
+type CompositeVariable struct {
+	Name   string   `json:"name"`
+	Vars   []string `json:"vars"`
+	Secret *bool    `json:"secret,omitempty"`
+	Base64 *bool    `json:"base64,omitempty"`
+}
+
+// IsSecret returns true if this composite variable is a secret (default: true).
+func (v *CompositeVariable) IsSecret() bool {
+	if v.Secret == nil {
+		return true
+	}
+	return *v.Secret
+}
+
+// IsBase64 returns true if the value should be base64 encoded (default: false).
+func (v *CompositeVariable) IsBase64() bool {
+	if v.Base64 == nil {
+		return false
+	}
+	return *v.Base64
 }
 
 // Variable is a single secret reference within a provider.
@@ -60,6 +85,8 @@ type Artifact struct {
 	BuildArgs  map[string]string `json:"buildArgs,omitempty"`
 	Language   string            `json:"language,omitempty"`
 	Build      []BuildStep       `json:"build,omitempty"`
+	PreRun     []BuildStep       `json:"preRun,omitempty"`
+	PostRun    []BuildStep       `json:"postRun,omitempty"`
 	Repository Repository        `json:"repository"`
 }
 
@@ -90,13 +117,12 @@ type BuildStep struct {
 
 // Repository defines where an artifact is stored or published.
 type Repository struct {
-	Type   string      `json:"type"`
-	URL    string      `json:"url,omitempty"`
-	User   string      `json:"user,omitempty"`
-	Image  string      `json:"image,omitempty"`
-	Path   string      `json:"path,omitempty"`
-	Kind   string      `json:"kind,omitempty"`
-	PreRun []BuildStep `json:"preRun,omitempty"`
+	Type  string `json:"type"`
+	URL   string `json:"url,omitempty"`
+	User  string `json:"user,omitempty"`
+	Image string `json:"image,omitempty"`
+	Path  string `json:"path,omitempty"`
+	Kind  string `json:"kind,omitempty"`
 }
 
 // FullImage returns "url/image" for registry repos.
@@ -109,10 +135,11 @@ func (r *Repository) FullImage() string {
 
 // Environment represents a deployment target (build, dev, uat, prod...).
 type Environment struct {
-	Strategy     string   `json:"strategy"`
-	PromotesFrom string   `json:"promotesFrom,omitempty"`
-	Artifacts    []string `json:"artifacts,omitempty"`
-	Deploy       *Deploy  `json:"deploy,omitempty"`
+	Strategy     string      `json:"strategy"`
+	PromotesFrom string      `json:"promotesFrom,omitempty"`
+	Artifacts    []string    `json:"artifacts,omitempty"`
+	Build        *BuildPhase `json:"build,omitempty"`
+	Deploy       *Deploy     `json:"deploy,omitempty"`
 }
 
 // IsBuild returns true if this environment builds from source.
@@ -121,7 +148,13 @@ func (e *Environment) IsBuild() bool { return e.Strategy == "build" }
 // IsPromote returns true if this environment promotes from another.
 func (e *Environment) IsPromote() bool { return e.Strategy == "promote" }
 
-// Deploy holds deployment configuration.
+// BuildPhase holds pre/post hooks for the build phase.
+type BuildPhase struct {
+	PreRun  []BuildStep `json:"preRun,omitempty"`
+	PostRun []BuildStep `json:"postRun,omitempty"`
+}
+
+// Deploy holds deployment configuration with pre/post hooks.
 type Deploy struct {
 	Type       string         `json:"type"`
 	Chart      string         `json:"chart,omitempty"`
@@ -129,4 +162,6 @@ type Deploy struct {
 	Namespace  string         `json:"namespace"`
 	Parameters string         `json:"parameters,omitempty"`
 	Values     map[string]any `json:"values,omitempty"`
+	PreRun     []BuildStep    `json:"preRun,omitempty"`
+	PostRun    []BuildStep    `json:"postRun,omitempty"`
 }

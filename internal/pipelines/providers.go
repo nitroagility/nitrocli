@@ -1,9 +1,11 @@
 package pipelines
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 // ProviderResolver resolves secrets from configured providers for a given environment.
@@ -27,29 +29,79 @@ func (r *ProviderResolver) Resolve(providers map[string]*Provider, envName strin
 	secretCount := 0
 
 	for _, entry := range applicable {
-		r.Log.Info(fmt.Sprintf("provider %q (priority: %d, type: %s) → %d variables",
-			entry.name, entry.provider.Priority, entry.provider.Type, len(entry.provider.Variables)))
+		p := entry.provider
 
-		for i := range entry.provider.Variables {
-			v := &entry.provider.Variables[i]
-			// Lower priority providers do not overwrite higher priority values.
-			if _, exists := vars[v.Name]; exists {
-				continue
-			}
-
-			value := r.resolveVariable(entry.provider, v)
-			vars[v.Name] = value
-
-			if v.IsSecret() {
-				r.Masker.Add(value)
-				secretCount++
-			}
+		switch p.Type {
+		case "composite":
+			r.Log.Info(fmt.Sprintf("provider %q (priority: %d, type: %s) → %d composites",
+				entry.name, p.Priority, p.Type, len(p.Composites)))
+			r.resolveComposites(p, vars, &secretCount)
+		default:
+			r.Log.Info(fmt.Sprintf("provider %q (priority: %d, type: %s) → %d variables",
+				entry.name, p.Priority, p.Type, len(p.Variables)))
+			r.resolveStandardVars(p, vars, &secretCount)
 		}
 	}
 
 	r.Log.Info(fmt.Sprintf("session: %d variables loaded (%d secrets masked)", len(vars), secretCount))
 
 	return vars
+}
+
+func (r *ProviderResolver) resolveStandardVars(p *Provider, vars map[string]string, secretCount *int) {
+	for i := range p.Variables {
+		v := &p.Variables[i]
+		if _, exists := vars[v.Name]; exists {
+			continue
+		}
+
+		value := r.resolveVariable(p, v)
+		vars[v.Name] = value
+
+		if v.IsSecret() {
+			r.Masker.Add(value)
+			*secretCount++
+		}
+	}
+}
+
+func (r *ProviderResolver) resolveComposites(p *Provider, vars map[string]string, secretCount *int) {
+	for i := range p.Composites {
+		cv := &p.Composites[i]
+		if _, exists := vars[cv.Name]; exists {
+			continue
+		}
+
+		// Build the concatenated value from referenced variables.
+		var parts []string
+		for _, varName := range cv.Vars {
+			val, ok := vars[varName]
+			if !ok {
+				r.Log.Fail(fmt.Sprintf("  %s: references %q which is not resolved yet", cv.Name, varName))
+				val = ""
+			}
+			parts = append(parts, varName+"="+val)
+		}
+
+		value := strings.Join(parts, "\n")
+
+		if cv.IsBase64() {
+			value = base64.StdEncoding.EncodeToString([]byte(value))
+		}
+
+		vars[cv.Name] = value
+
+		if cv.IsSecret() {
+			r.Masker.Add(value)
+			*secretCount++
+		}
+
+		label := cv.Name
+		if cv.IsBase64() {
+			label += " (base64)"
+		}
+		r.Log.Info(fmt.Sprintf("  %s: composed from %d variables", label, len(cv.Vars)))
+	}
 }
 
 func (r *ProviderResolver) resolveVariable(p *Provider, v *Variable) string {
@@ -60,7 +112,7 @@ func (r *ProviderResolver) resolveVariable(p *Provider, v *Variable) string {
 		// TODO: implement bitwarden resolution via CLI or API.
 		return ""
 	default:
-		return fmt.Sprintf("{{ .%s }}", v.Name)
+		return ""
 	}
 }
 

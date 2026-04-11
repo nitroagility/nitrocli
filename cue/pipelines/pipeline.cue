@@ -26,31 +26,42 @@ package pipelines
 	variables: [...#ProviderVariable]
 }
 
-#Provider: #BitwardenProvider | #EnvProvider
+#CompositeVariable: {
+	name:     string & =~"^[A-Z][A-Z0-9_]+$"
+	vars:     [...string]
+	secret?:  *true | bool
+	base64?:  *false | bool
+}
+
+#CompositeProvider: {
+	type:       "composite"
+	priority:   int & >=1
+	envs:       [...string]
+	composites: [...#CompositeVariable]
+}
+
+#Provider: #BitwardenProvider | #EnvProvider | #CompositeProvider
 
 // ============================================================
 // REPOSITORIES
 // ============================================================
 
 #DockerRegistry: {
-	type:    "registry"
-	url:     string
-	user?:   string
-	image:   string
-	preRun?: [...#BuildCommand]
+	type:  "registry"
+	url:   string
+	user?: string
+	image: string
 }
 
 #FilesystemRepo: {
-	type:    "filesystem"
-	path:    string
-	preRun?: [...#BuildCommand]
+	type: "filesystem"
+	path: string
 }
 
 #PackageRepo: {
-	type:    "package"
-	kind:    "npm" | "maven" | "pypi" | "go"
-	url:     string
-	preRun?: [...#BuildCommand]
+	type: "package"
+	kind: "npm" | "maven" | "pypi" | "go"
+	url:  string
 }
 
 // Extend here: | #S3Repo | #ArtifactoryRepo etc.
@@ -64,10 +75,10 @@ package pipelines
 
 // A single build command with optional per-command workdir override
 #BuildCommand: {
-	command: string
-	args:    [...string]
-	env?:    [string]: string
-	workdir?: string // overrides artifact-level workdir for this step
+	command:  string
+	args:     [...string]
+	env?:     [string]: string
+	workdir?: string
 }
 
 #DockerArtifact: {
@@ -76,6 +87,8 @@ package pipelines
 	dockerfile: string | *"./Dockerfile"
 	platforms:  [#Platform, ...#Platform]
 	buildArgs?: [string]: string
+	preRun?:    [...#BuildCommand]
+	postRun?:   [...#BuildCommand]
 	repository: #DockerRegistry
 }
 
@@ -83,7 +96,9 @@ package pipelines
 	type:      "binary"
 	workdir?:  string | *"."
 	platforms: [#Platform, ...#Platform]
-	build:     [#BuildCommand, ...#BuildCommand] // at least one required
+	build:     [#BuildCommand, ...#BuildCommand]
+	preRun?:   [...#BuildCommand]
+	postRun?:  [...#BuildCommand]
 	repository: #FilesystemRepo
 }
 
@@ -92,6 +107,8 @@ package pipelines
 	workdir?:  string | *"."
 	language:  "go" | "java" | "python" | "node"
 	build:     [#BuildCommand, ...#BuildCommand]
+	preRun?:   [...#BuildCommand]
+	postRun?:  [...#BuildCommand]
 	repository: #PackageRepo
 }
 
@@ -118,11 +135,23 @@ package pipelines
 // ENVIRONMENTS
 // ============================================================
 
+#BuildPhase: {
+	preRun?:  [...#BuildCommand]
+	postRun?: [...#BuildCommand]
+}
+
+#DeployPhase: {
+	#Deploy
+	preRun?:  [...#BuildCommand]
+	postRun?: [...#BuildCommand]
+}
+
 #Environment: {
 	strategy:      "build" | "promote"
-	promotesFrom?: string          // absent only for the first environment
-	artifacts?:    [...string]     // only for promote — if absent, promotes all
-	deploy?:       #Deploy         // optional — not all environments deploy
+	promotesFrom?: string
+	artifacts?:    [...string]
+	build?:        #BuildPhase
+	deploy?:       #DeployPhase
 }
 
 // ============================================================

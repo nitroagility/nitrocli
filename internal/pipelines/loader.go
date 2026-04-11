@@ -355,7 +355,7 @@ func validate(cfg *Config) []string {
 	}
 
 	// Provider checks.
-	validProviderTypes := map[string]bool{"bitwarden": true, "env": true}
+	validProviderTypes := map[string]bool{"bitwarden": true, "env": true, "composite": true}
 	for name, p := range cfg.Providers {
 		if !validProviderTypes[p.Type] {
 			errs = append(errs, fmt.Sprintf(
@@ -369,6 +369,15 @@ func validate(cfg *Config) []string {
 				errs = append(errs, fmt.Sprintf(
 					"provider %q: variable %q uses reserved prefix NITRO_ — this prefix is reserved for NitroCLI internal use",
 					name, v.Name,
+				))
+			}
+		}
+
+		for _, cv := range p.Composites {
+			if strings.HasPrefix(cv.Name, "NITRO_") {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: composite %q uses reserved prefix NITRO_ — this prefix is reserved for NitroCLI internal use",
+					name, cv.Name,
 				))
 			}
 		}
