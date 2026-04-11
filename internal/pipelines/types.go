@@ -37,9 +37,10 @@ type Provider struct {
 
 // Variable is a single secret reference within a provider.
 type Variable struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Secret *bool  `json:"secret,omitempty"`
+	Name    string  `json:"name"`
+	Path    string  `json:"path"`
+	Secret  *bool   `json:"secret,omitempty"`
+	Default *string `json:"default,omitempty"`
 }
 
 // IsSecret returns true if this variable is a secret (default: true).

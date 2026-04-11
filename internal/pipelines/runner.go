@@ -39,8 +39,9 @@ func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 
 // RunOptions controls which phases of the pipeline to execute.
 type RunOptions struct {
-	Build  bool
-	Deploy bool
+	Build       bool
+	Deploy      bool
+	BuildNumber string
 }
 
 // Run executes the pipeline for the specified environment.
@@ -58,10 +59,10 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 	start := time.Now()
 
 	r.printHeader(envName, env, opts)
-	r.resolveProviders(envName)
+	r.resolveProviders(envName, opts)
 
 	if opts.Build {
-		if err := r.processArtifacts(ctx, env); err != nil {
+		if err := r.processArtifacts(ctx, env, opts); err != nil {
 			r.printFailure(start, err)
 			return err
 		}
@@ -125,18 +126,27 @@ func (r *Runner) processRepoPreRun(ctx context.Context, name string, repo *Repos
 	return nil
 }
 
-func (r *Runner) resolveProviders(envName string) {
-	if len(r.Config.Providers) == 0 {
-		return
+func (r *Runner) resolveProviders(envName string, opts RunOptions) {
+	r.Log.Step("Resolving providers")
+
+	var vars map[string]string
+	if len(r.Config.Providers) > 0 {
+		vars = r.Provider.Resolve(r.Config.Providers, envName)
+	} else {
+		vars = make(map[string]string)
 	}
 
-	r.Log.Step("Resolving providers")
-	vars := r.Provider.Resolve(r.Config.Providers, envName)
+	// Inject NITRO_ reserved variables.
+	if opts.BuildNumber != "" {
+		vars["NITRO_BUILD_NUMBER"] = opts.BuildNumber
+		r.Log.Info(fmt.Sprintf("NITRO_BUILD_NUMBER = %s", opts.BuildNumber))
+	}
+
 	r.Executor.SetEnv(vars)
 	r.Log.Separator()
 }
 
-func (r *Runner) processArtifacts(ctx context.Context, env *Environment) error {
+func (r *Runner) processArtifacts(ctx context.Context, env *Environment, opts RunOptions) error {
 	names := env.Artifacts
 	if len(names) == 0 {
 		names = r.Config.ArtifactNames()
@@ -148,7 +158,7 @@ func (r *Runner) processArtifacts(ctx context.Context, env *Environment) error {
 			r.Log.Fail(fmt.Sprintf("artifact %q not found, skipping", name))
 			continue
 		}
-		if err := r.runArtifact(ctx, name, art, env); err != nil {
+		if err := r.runArtifact(ctx, name, art, env, opts); err != nil {
 			return fmt.Errorf("artifact %q failed: %w", name, err)
 		}
 	}
@@ -156,13 +166,13 @@ func (r *Runner) processArtifacts(ctx context.Context, env *Environment) error {
 	return nil
 }
 
-func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, env *Environment) error {
+func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, env *Environment, opts RunOptions) error {
 	r.Log.Step(fmt.Sprintf("%s (%s)", name, art.Type))
 
 	var err error
 	switch {
 	case art.IsDocker():
-		err = r.runDocker(ctx, art, env)
+		err = r.runDocker(ctx, art, env, opts)
 	case art.IsBinary():
 		err = r.runBuild(ctx, art)
 	case art.IsPackage():
@@ -179,7 +189,7 @@ func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, en
 	return nil
 }
 
-func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment) error {
+func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment, opts RunOptions) error {
 	if env.IsPromote() {
 		r.Log.Promote(fmt.Sprintf("promoting %s from %s", art.Repository.FullImage(), env.PromotesFrom))
 		return nil
@@ -192,7 +202,7 @@ func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment)
 		return err
 	}
 
-	args := r.Commands.DockerBuild(art)
+	args := r.Commands.DockerBuild(art, opts.BuildNumber)
 	return r.Executor.Run(ctx, args, workdir)
 }
 

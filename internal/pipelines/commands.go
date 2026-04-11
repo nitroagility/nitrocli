@@ -6,7 +6,8 @@ import "strings"
 type CommandBuilder struct{}
 
 // DockerBuild returns the docker buildx command for a docker artifact.
-func (b *CommandBuilder) DockerBuild(art *Artifact) []string {
+// If buildNumber is provided, tags both :latest and :<buildNumber>.
+func (b *CommandBuilder) DockerBuild(art *Artifact, buildNumber string) []string {
 	args := []string{"docker", "buildx", "build", "--progress=plain"}
 	for _, p := range art.Platforms {
 		args = append(args, "--platform", p)
@@ -17,7 +18,11 @@ func (b *CommandBuilder) DockerBuild(art *Artifact) []string {
 	if art.Dockerfile != "" {
 		args = append(args, "-f", art.Dockerfile)
 	}
-	args = append(args, "-t", art.Repository.FullImage()+":latest")
+	image := art.Repository.FullImage()
+	args = append(args, "-t", image+":latest")
+	if buildNumber != "" {
+		args = append(args, "-t", image+":"+buildNumber)
+	}
 	args = append(args, "--push", art.EffectiveWorkdir())
 	return args
 }

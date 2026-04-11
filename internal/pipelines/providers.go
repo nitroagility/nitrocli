@@ -65,13 +65,18 @@ func (r *ProviderResolver) resolveVariable(p *Provider, v *Variable) string {
 }
 
 func (r *ProviderResolver) resolveEnvVariable(v *Variable) string {
-	// Path is the OS environment variable name to read from.
 	value, ok := os.LookupEnv(v.Path)
-	if !ok {
-		r.Log.Fail(fmt.Sprintf("  env variable %q not set (expected in $%s)", v.Name, v.Path))
-		return ""
+	if ok {
+		return value
 	}
-	return value
+
+	if v.Default != nil {
+		r.Log.Info(fmt.Sprintf("  %s: using default (env $%s not set)", v.Name, v.Path))
+		return *v.Default
+	}
+
+	r.Log.Fail(fmt.Sprintf("  %s: not set (expected in $%s, no default)", v.Name, v.Path))
+	return ""
 }
 
 type providerEntry struct {

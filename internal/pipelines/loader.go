@@ -359,9 +359,18 @@ func validate(cfg *Config) []string {
 	for name, p := range cfg.Providers {
 		if !validProviderTypes[p.Type] {
 			errs = append(errs, fmt.Sprintf(
-				"provider %q: unknown type %q (supported: bitwarden)",
+				"provider %q: unknown type %q (supported: bitwarden, env)",
 				name, p.Type,
 			))
+		}
+
+		for _, v := range p.Variables {
+			if strings.HasPrefix(v.Name, "NITRO_") {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: variable %q uses reserved prefix NITRO_ — this prefix is reserved for NitroCLI internal use",
+					name, v.Name,
+				))
+			}
 		}
 	}
 

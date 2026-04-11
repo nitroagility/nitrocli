@@ -40,6 +40,7 @@ func newPipelinesCmd() *cobra.Command {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			doBuild, _ := cmd.Flags().GetBool("build")
 			doDeploy, _ := cmd.Flags().GetBool("deploy")
+			buildNumber, _ := cmd.Flags().GetString("build-number")
 
 			if envName == "" {
 				return pipelineError(&pipelines.PipelineError{
@@ -59,6 +60,15 @@ func newPipelinesCmd() *cobra.Command {
 				})
 			}
 
+			if doBuild && buildNumber == "" {
+				return pipelineError(&pipelines.PipelineError{
+					Phase:   "args",
+					Summary: "Missing required flag --build-number",
+					Details: []string{"--build-number is required when --build is specified"},
+					Hint:    "usage: nitro pipelines run --env <environment> --build --build-number <number>",
+				})
+			}
+
 			workdir, err := resolveWorkdir(cmd)
 			if err != nil {
 				return pipelineError(err)
@@ -75,8 +85,9 @@ func newPipelinesCmd() *cobra.Command {
 			}
 
 			opts := pipelines.RunOptions{
-				Build:  doBuild,
-				Deploy: doDeploy,
+				Build:       doBuild,
+				Deploy:      doDeploy,
+				BuildNumber: buildNumber,
 			}
 			runner := pipelines.NewRunner(cfg, dryRun, workdir)
 			if err := runner.Run(cmd.Context(), envName, opts); err != nil {
@@ -92,6 +103,7 @@ func newPipelinesCmd() *cobra.Command {
 	runCmd.Flags().BoolP("dry-run", "n", false, "print commands without executing")
 	runCmd.Flags().Bool("build", false, "run the build phase")
 	runCmd.Flags().Bool("deploy", false, "run the deploy phase")
+	runCmd.Flags().String("build-number", "", "build number used for tagging artifacts")
 
 	cmd.AddCommand(runCmd)
 	return cmd

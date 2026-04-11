@@ -5,9 +5,10 @@ package pipelines
 // ============================================================
 
 #ProviderVariable: {
-	name:    string & =~"^[A-Z][A-Z0-9_]+$"
-	path:    string
-	secret?: *true | bool
+	name:     string & =~"^[A-Z][A-Z0-9_]+$"
+	path:     string
+	secret?:  *true | bool
+	default?: string
 }
 
 #BitwardenProvider: {
