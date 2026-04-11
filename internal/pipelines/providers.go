@@ -58,7 +58,7 @@ func (r *ProviderResolver) resolveVariable(p *Provider, v *Variable) string {
 		return r.resolveEnvVariable(v)
 	case "bitwarden":
 		// TODO: implement bitwarden resolution via CLI or API.
-		return fmt.Sprintf("{{ .%s }}", v.Name)
+		return ""
 	default:
 		return fmt.Sprintf("{{ .%s }}", v.Name)
 	}

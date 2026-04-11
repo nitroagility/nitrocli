@@ -32,21 +32,24 @@ package pipelines
 // ============================================================
 
 #DockerRegistry: {
-	type:  "registry"
-	url:   string
-	user:  string
-	image: string
+	type:    "registry"
+	url:     string
+	user?:   string
+	image:   string
+	preRun?: [...#BuildCommand]
 }
 
 #FilesystemRepo: {
-	type: "filesystem"
-	path: string
+	type:    "filesystem"
+	path:    string
+	preRun?: [...#BuildCommand]
 }
 
 #PackageRepo: {
-	type: "package"
-	kind: "npm" | "maven" | "pypi" | "go"
-	url:  string
+	type:    "package"
+	kind:    "npm" | "maven" | "pypi" | "go"
+	url:     string
+	preRun?: [...#BuildCommand]
 }
 
 // Extend here: | #S3Repo | #ArtifactoryRepo etc.

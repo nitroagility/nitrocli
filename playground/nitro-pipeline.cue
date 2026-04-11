@@ -34,8 +34,8 @@ config: pipelines.#PipelineFile & {
 			platforms:  ["linux/amd64", "linux/arm64"]
 			buildArgs: {
 				GO_VERSION:    "1.22"
-				BUILD_VERSION: "{{ .BUILD_VERSION }}"
-				GITHUB_TOKEN:  "{{ .GITHUB_TOKEN }}"
+				BUILD_VERSION: "{{ .Env.BUILD_VERSION }}"
+				GITHUB_TOKEN:  "{{ .Env.GITHUB_TOKEN }}"
 			}
 			repository: {
 				type:  "registry"
@@ -52,7 +52,7 @@ config: pipelines.#PipelineFile & {
 			dockerfile: "./Dockerfile"
 			platforms:  ["linux/amd64"]
 			buildArgs: {
-				BUILD_VERSION: "{{ .BUILD_VERSION }}"
+				BUILD_VERSION: "{{ .Env.BUILD_VERSION }}"
 			}
 			repository: {
 				type:  "registry"
@@ -134,7 +134,7 @@ config: pipelines.#PipelineFile & {
 				chart:      "myorg/api-gateway"
 				repo:       "https://charts.myorg.io"
 				namespace:  "dev"
-				parameters: "--set image.tag={{ .BUILD_VERSION }}"
+				parameters: "--set image.tag={{ .Env.BUILD_VERSION }}"
 				values: {
 					replicaCount: 1
 					ingress: enabled: false
@@ -156,7 +156,7 @@ config: pipelines.#PipelineFile & {
 				chart:      "myorg/api-gateway"
 				repo:       "https://charts.myorg.io"
 				namespace:  "uat"
-				parameters: "--set image.tag={{ .BUILD_VERSION }}"
+				parameters: "--set image.tag={{ .Env.BUILD_VERSION }}"
 				values: {
 					replicaCount: 2
 					ingress: enabled: true
@@ -178,7 +178,7 @@ config: pipelines.#PipelineFile & {
 				chart:      "myorg/api-gateway"
 				repo:       "https://charts.myorg.io"
 				namespace:  "production"
-				parameters: "--set image.tag={{ .BUILD_VERSION }}"
+				parameters: "--set image.tag={{ .Env.BUILD_VERSION }}"
 				values: {
 					replicaCount: 5
 					ingress: {

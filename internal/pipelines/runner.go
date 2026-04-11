@@ -107,6 +107,24 @@ func (r *Runner) printHeader(envName string, env *Environment, opts RunOptions) 
 	r.Log.Separator()
 }
 
+func (r *Runner) processRepoPreRun(ctx context.Context, name string, repo *Repository, workdir string) error {
+	if len(repo.PreRun) == 0 {
+		return nil
+	}
+
+	r.Log.Info(fmt.Sprintf("pre-run for %s repository", name))
+
+	for i, s := range repo.PreRun {
+		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(repo.PreRun), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
+		args := r.Commands.BuildStepCommand(&s)
+		if err := r.Executor.Run(ctx, args, workdir); err != nil {
+			return fmt.Errorf("pre-run step %d for %s failed: %w", i+1, name, err)
+		}
+	}
+
+	return nil
+}
+
 func (r *Runner) resolveProviders(envName string) {
 	if len(r.Config.Providers) == 0 {
 		return
@@ -170,6 +188,10 @@ func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment)
 	workdir := r.resolveWorkdir(art)
 	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
 
+	if err := r.processRepoPreRun(ctx, art.Repository.FullImage(), &art.Repository, workdir); err != nil {
+		return err
+	}
+
 	args := r.Commands.DockerBuild(art)
 	return r.Executor.Run(ctx, args, workdir)
 }
@@ -177,6 +199,10 @@ func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment)
 func (r *Runner) runBuild(ctx context.Context, art *Artifact) error {
 	workdir := r.resolveWorkdir(art)
 	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
+
+	if err := r.processRepoPreRun(ctx, art.Repository.Path, &art.Repository, workdir); err != nil {
+		return err
+	}
 
 	for i, s := range art.Build {
 		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(art.Build), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
@@ -196,6 +222,10 @@ func (r *Runner) runBuild(ctx context.Context, art *Artifact) error {
 func (r *Runner) runPackage(ctx context.Context, art *Artifact) error {
 	workdir := r.resolveWorkdir(art)
 	r.Log.Info(fmt.Sprintf("workdir: %s | language: %s", workdir, art.Language))
+
+	if err := r.processRepoPreRun(ctx, art.Repository.URL, &art.Repository, workdir); err != nil {
+		return err
+	}
 
 	for i, s := range art.Build {
 		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(art.Build), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))

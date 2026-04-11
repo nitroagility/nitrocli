@@ -89,12 +89,13 @@ type BuildStep struct {
 
 // Repository defines where an artifact is stored or published.
 type Repository struct {
-	Type  string `json:"type"`
-	URL   string `json:"url,omitempty"`
-	User  string `json:"user,omitempty"`
-	Image string `json:"image,omitempty"`
-	Path  string `json:"path,omitempty"`
-	Kind  string `json:"kind,omitempty"`
+	Type   string      `json:"type"`
+	URL    string      `json:"url,omitempty"`
+	User   string      `json:"user,omitempty"`
+	Image  string      `json:"image,omitempty"`
+	Path   string      `json:"path,omitempty"`
+	Kind   string      `json:"kind,omitempty"`
+	PreRun []BuildStep `json:"preRun,omitempty"`
 }
 
 // FullImage returns "url/image" for registry repos.
