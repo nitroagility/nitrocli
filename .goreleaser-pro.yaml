@@ -58,7 +58,6 @@ notarize:
 
 homebrew_casks:
   - name: nitro
-    binary: nitro
     ids: ["nitro"]
     repository:
       owner: "{{ .Env.ORG }}"
