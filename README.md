@@ -2,7 +2,7 @@
   <img src="images/nitrocli.png" alt="NitroCLI" width="200">
 </p>
 
-<h1 align="center">NitroCLI</h1>
+<h1 align="center">Nitro<i>CLI</i></h1>
 
 <p align="center">
   <strong>The official command line interface for <a href="#">NitroAgility</a></strong>
@@ -17,7 +17,7 @@
 ---
 
 ```
-$ nitrocli
+$ nitro
 Fast. Minimal. Powerful.
 Manage your software and operations from the terminal.
 ```
