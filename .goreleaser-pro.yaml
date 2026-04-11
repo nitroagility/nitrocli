@@ -62,7 +62,7 @@ homebrew_casks:
     repository:
       owner: "{{ .Env.ORG }}"
       name: homebrew-tap
-      token: "{{ .Env.GITHUB_TOKEN }}"
+      token: "{{ .Env.GH_TOKEN }}"
     alternative_names:
       - nitro@{{ .Version }}
       - nitro@{{ .Major }}

@@ -5,7 +5,7 @@
 <h1 align="center">Nitro<i>CLI</i></h1>
 
 <p align="center">
-  <strong>The official command line interface for <a href="#">NitroAgility</a></strong>
+  <strong>The official command line interface for <a href="https://www.nitroagility.com" target="_blank">NitroAgility</a></strong>
 </p>
 
 <p align="center">
