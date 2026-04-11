@@ -59,7 +59,9 @@ func FormatError(err error) string {
 
 // Load reads a CUE pipeline file, validates it via CUE, parses the config,
 // and runs logical validation on the resulting structure.
-func Load(ctx context.Context, path string) (*Config, error) {
+// If cliVersion is non-empty (i.e. not "dev"), it checks that the schema
+// version used by the pipeline file matches the CLI version.
+func Load(ctx context.Context, path string, cliVersion string) (*Config, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, &PipelineError{
@@ -76,6 +78,11 @@ func Load(ctx context.Context, path string) (*Config, error) {
 			Details: []string{absPath},
 			Hint:    "check the --pipeline flag or ensure the file exists in the current directory",
 		}
+	}
+
+	// Check schema version compatibility before doing anything else.
+	if err := checkSchemaVersion(absPath, cliVersion); err != nil {
+		return nil, err
 	}
 
 	raw, err := cueExport(ctx, absPath)
@@ -103,6 +110,74 @@ func Load(ctx context.Context, path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+const schemaModule = "github.com/nitroagility/nitrocli@v0"
+
+func checkSchemaVersion(absPath string, cliVersion string) error {
+	// Skip check in dev mode (no version injected).
+	if cliVersion == "" || cliVersion == "dev" {
+		return nil
+	}
+
+	dir := filepath.Dir(absPath)
+	modulePath := filepath.Join(dir, "cue.mod", "module.cue")
+
+	data, err := os.ReadFile(modulePath)
+	if err != nil {
+		// No cue.mod — skip check, cue export will catch it.
+		return nil
+	}
+
+	schemaVersion := extractSchemaVersion(string(data), schemaModule)
+	if schemaVersion == "" {
+		// Schema dep not found — skip, could be using a different module.
+		return nil
+	}
+
+	// Normalize: strip leading "v" for comparison.
+	sv := strings.TrimPrefix(schemaVersion, "v")
+	cv := strings.TrimPrefix(cliVersion, "v")
+
+	if sv != cv {
+		return &PipelineError{
+			Phase:   "compat",
+			Summary: "Schema version mismatch",
+			Details: []string{
+				fmt.Sprintf("CLI version:    v%s", cv),
+				fmt.Sprintf("schema version: v%s", sv),
+			},
+			Hint: fmt.Sprintf(
+				"update the schema: cd %s && cue mod get %s@v%s",
+				dir, strings.TrimSuffix(schemaModule, "@v0"), cv,
+			),
+		}
+	}
+
+	return nil
+}
+
+func extractSchemaVersion(content string, module string) string {
+	// Parse the module.cue to find: "module@v0": { v: "v0.0.X" }
+	// Simple string scanning — no CUE parser needed.
+	idx := strings.Index(content, module)
+	if idx < 0 {
+		return ""
+	}
+
+	rest := content[idx:]
+	vIdx := strings.Index(rest, "v: \"")
+	if vIdx < 0 {
+		return ""
+	}
+
+	start := vIdx + 4 // len(`v: "`)
+	end := strings.Index(rest[start:], "\"")
+	if end < 0 {
+		return ""
+	}
+
+	return rest[start : start+end]
 }
 
 func cueExport(ctx context.Context, absPath string) ([]byte, error) {
@@ -155,9 +230,22 @@ func parseOutput(data []byte) (*Config, error) {
 		payload = configData
 	}
 
+	// Use strict decoding to detect unknown fields from a newer schema version.
 	var cfg Config
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return nil, fmt.Errorf("cannot decode config: %w", err)
+	dec := json.NewDecoder(strings.NewReader(string(payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		// Try again without strict mode to get partial config for diagnostics.
+		var fallback Config
+		if jsonErr := json.Unmarshal(payload, &fallback); jsonErr != nil {
+			return nil, fmt.Errorf("cannot decode config: %w", err)
+		}
+		return nil, &PipelineError{
+			Phase:   "compat",
+			Summary: "Schema version is not compatible with this CLI",
+			Details: []string{err.Error()},
+			Hint:    "upgrade NitroCLI to a version that supports this schema, or downgrade the schema version",
+		}
 	}
 
 	return &cfg, nil
@@ -166,6 +254,7 @@ func parseOutput(data []byte) (*Config, error) {
 func validate(cfg *Config) []string {
 	var errs []string
 
+	// Structure checks.
 	if len(cfg.Artifacts) == 0 {
 		errs = append(errs, "no artifacts defined — at least one artifact is required")
 	}
@@ -174,7 +263,51 @@ func validate(cfg *Config) []string {
 		errs = append(errs, "no environments defined — at least one environment is required")
 	}
 
+	// Artifact type checks.
+	validArtifactTypes := map[string]bool{"docker": true, "binary": true, "package": true}
+	validRepoTypes := map[string]bool{"registry": true, "filesystem": true, "package": true}
+
+	for name, art := range cfg.Artifacts {
+		if !validArtifactTypes[art.Type] {
+			errs = append(errs, fmt.Sprintf(
+				"artifact %q: unknown type %q (supported: docker, binary, package)",
+				name, art.Type,
+			))
+		}
+
+		if !validRepoTypes[art.Repository.Type] {
+			errs = append(errs, fmt.Sprintf(
+				"artifact %q: unknown repository type %q (supported: registry, filesystem, package)",
+				name, art.Repository.Type,
+			))
+		}
+
+		if art.IsDocker() && len(art.Platforms) == 0 {
+			errs = append(errs, fmt.Sprintf(
+				"artifact %q: docker artifact requires at least one platform",
+				name,
+			))
+		}
+
+		if (art.IsBinary() || art.IsPackage()) && len(art.Build) == 0 {
+			errs = append(errs, fmt.Sprintf(
+				"artifact %q: %s artifact requires at least one build step",
+				name, art.Type,
+			))
+		}
+	}
+
+	// Environment checks.
+	validStrategies := map[string]bool{"build": true, "promote": true}
+
 	for name, env := range cfg.Environments {
+		if !validStrategies[env.Strategy] {
+			errs = append(errs, fmt.Sprintf(
+				"environment %q: unknown strategy %q (supported: build, promote)",
+				name, env.Strategy,
+			))
+		}
+
 		if env.PromotesFrom != "" {
 			if _, ok := cfg.Environments[env.PromotesFrom]; !ok {
 				errs = append(errs, fmt.Sprintf(
@@ -197,6 +330,27 @@ func validate(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf(
 				"environment %q: strategy is 'promote' but promotesFrom is not set",
 				name,
+			))
+		}
+
+		if env.Deploy != nil {
+			validDeployTypes := map[string]bool{"helm": true}
+			if !validDeployTypes[env.Deploy.Type] {
+				errs = append(errs, fmt.Sprintf(
+					"environment %q: unknown deploy type %q (supported: helm)",
+					name, env.Deploy.Type,
+				))
+			}
+		}
+	}
+
+	// Provider checks.
+	validProviderTypes := map[string]bool{"bitwarden": true}
+	for name, p := range cfg.Providers {
+		if !validProviderTypes[p.Type] {
+			errs = append(errs, fmt.Sprintf(
+				"provider %q: unknown type %q (supported: bitwarden)",
+				name, p.Type,
 			))
 		}
 	}

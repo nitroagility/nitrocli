@@ -4,6 +4,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
@@ -14,31 +15,46 @@ var (
 	GitCommit string
 )
 
-func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "version",
-		Short: "Show the version details",
-		Long:  "This command shows the version details.",
-		Run: func(_ *cobra.Command, _ []string) {
-			v := Version
-			if v == "" {
-				v = "dev"
-			}
-			bt := BuildTime
-			if bt == "" {
-				bt = "unknown"
-			}
-			gc := GitCommit
-			if gc == "" {
-				gc = "unknown"
-			}
-			fmt.Printf("version:    %s\n", v)
-			fmt.Printf("build_time: %s\n", bt)
-			fmt.Printf("git_commit: %s\n", gc)
-		},
+var (
+	vLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#546E7A"))
+	vValue = lipgloss.NewStyle().Foreground(lipgloss.Color("#00E5FF")).Bold(true)
+	vDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("#546E7A"))
+)
+
+func printVersion() {
+	v := Version
+	if v == "" {
+		v = "0.0.0-dev"
 	}
+	bt := BuildTime
+	if bt == "" {
+		bt = "unknown"
+	}
+	gc := GitCommit
+	if gc == "" {
+		gc = "unknown"
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s %s\n", vLabel.Render("version"), vValue.Render(v))
+	fmt.Printf("  %s  %s\n", vLabel.Render("commit "), vDim.Render(gc))
+	fmt.Printf("  %s   %s\n", vLabel.Render("built  "), vDim.Render(bt))
+	fmt.Println()
 }
 
 func init() {
-	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.Flags().BoolP("version", "v", false, "show version")
+
+	defaultRun := rootCmd.RunE
+	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		showVersion, _ := cmd.Flags().GetBool("version")
+		if showVersion {
+			printVersion()
+			return nil
+		}
+		if defaultRun != nil {
+			return defaultRun(cmd, args)
+		}
+		return cmd.Help()
+	}
 }

@@ -53,7 +53,7 @@ func newPipelinesCmd() *cobra.Command {
 				return pipelineError(err)
 			}
 
-			cfg, err := pipelines.Load(cmd.Context(), pipelineFile)
+			cfg, err := pipelines.Load(cmd.Context(), pipelineFile, Version)
 			if err != nil {
 				return pipelineError(err)
 			}
