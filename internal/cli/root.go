@@ -79,6 +79,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	cobra.OnInitialize(initConfig)
+	rootCmd.PersistentFlags().StringP("workdir", "w", "", "working directory (default: current directory)")
 }
 
 func initConfig() {
