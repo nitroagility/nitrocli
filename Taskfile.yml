@@ -94,6 +94,15 @@ tasks:
     cmds:
       - go run {{.TASKFILE_DIR}}/cmd/nitro {{.CLI_ARGS}}
 
+  # Git
+
+  push:
+    desc: Add, commit and push all changes
+    cmds:
+      - git add -A
+      - git commit -m "{{.CLI_ARGS}}"
+      - git push
+
   # CI
 
   ci:build:

@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +18,11 @@ func resolveWorkdir(cmd *cobra.Command) (string, error) {
 	return filepath.Abs(workdir)
 }
 
+func pipelineError(err error) error {
+	fmt.Fprint(os.Stderr, pipelines.FormatError(err))
+	return err
+}
+
 func newPipelinesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pipelines",
@@ -26,32 +30,37 @@ func newPipelinesCmd() *cobra.Command {
 	}
 
 	runCmd := &cobra.Command{
-		Use:          "run",
-		Short:        "Run a pipeline for the specified environment",
-		SilenceUsage: true, SilenceErrors: true,
+		Use:           "run",
+		Short:         "Run a pipeline for the specified environment",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			pipelineFile, _ := cmd.Flags().GetString("pipeline")
 			envName, _ := cmd.Flags().GetString("env")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 			if envName == "" {
-				return errors.New("--env flag is required")
+				return pipelineError(&pipelines.PipelineError{
+					Phase:   "args",
+					Summary: "Missing required flag --env",
+					Details: []string{"the --env / -e flag is required to specify the target environment"},
+					Hint:    "usage: nitro pipelines run --env <environment>",
+				})
 			}
 
 			workdir, err := resolveWorkdir(cmd)
 			if err != nil {
-				return err
+				return pipelineError(err)
 			}
 
 			cfg, err := pipelines.Load(cmd.Context(), pipelineFile)
 			if err != nil {
-				fmt.Fprint(os.Stderr, pipelines.FormatError(err))
-				return err
+				return pipelineError(err)
 			}
 
 			runner := pipelines.NewRunner(cfg, dryRun, workdir)
 			if err := runner.Run(cmd.Context(), envName); err != nil {
-				return err
+				return pipelineError(err)
 			}
 
 			return nil

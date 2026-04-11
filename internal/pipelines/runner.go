@@ -41,11 +41,12 @@ func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 func (r *Runner) Run(ctx context.Context, envName string) error {
 	env, ok := r.Config.Environments[envName]
 	if !ok {
-		return fmt.Errorf(
-			"environment %q not found, available: %s",
-			envName,
-			strings.Join(r.Config.EnvironmentNames(), ", "),
-		)
+		return &PipelineError{
+			Phase:   "run",
+			Summary: fmt.Sprintf("Environment %q not found", envName),
+			Details: []string{fmt.Sprintf("available environments: %s", strings.Join(r.Config.EnvironmentNames(), ", "))},
+			Hint:    "check the --env flag value",
+		}
 	}
 
 	start := time.Now()
