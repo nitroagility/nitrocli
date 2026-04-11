@@ -1,4 +1,4 @@
-module: "os-nitroagility.cue.works/schemas@v0"
+module: "nitroagility.com/schemas@v0"
 language: {
 	version: "v0.16.1"
 }
