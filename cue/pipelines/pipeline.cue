@@ -4,7 +4,7 @@ package pipelines
 // PROVIDERS
 // ============================================================
 
-#BitwardenVariable: {
+#ProviderVariable: {
 	name:    string & =~"^[A-Z][A-Z0-9_]+$"
 	path:    string
 	secret?: *true | bool
@@ -15,11 +15,17 @@ package pipelines
 	priority:  int & >=1
 	url:       string | *"https://vault.bitwarden.com"
 	envs:      [...string]
-	variables: [...#BitwardenVariable]
+	variables: [...#ProviderVariable]
 }
 
-// Extend here: | #VaultProvider | #AwsSecretsProvider | #EnvProvider | #ConsulProvider etc.
-#Provider: #BitwardenProvider
+#EnvProvider: {
+	type:      "env"
+	priority:  int & >=1
+	envs:      [...string]
+	variables: [...#ProviderVariable]
+}
+
+#Provider: #BitwardenProvider | #EnvProvider
 
 // ============================================================
 // REPOSITORIES

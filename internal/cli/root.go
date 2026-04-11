@@ -2,9 +2,13 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/nitroagility/nitrocli/internal/pipelines"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -72,9 +76,11 @@ func buildBanner() string {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "nitro",
-	Short: "NitroCLI - The official CLI for NitroAgility",
-	Long:  buildBanner(),
+	Use:           "nitro",
+	Short:         "NitroCLI - The official CLI for NitroAgility",
+	Long:          buildBanner(),
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func init() {
@@ -87,7 +93,21 @@ func initConfig() {
 	viper.AutomaticEnv()
 }
 
+// alreadyPrinted wraps an error that was already printed to stderr.
+type alreadyPrinted struct{ err error }
+
+func (a *alreadyPrinted) Error() string { return a.err.Error() }
+func (a *alreadyPrinted) Unwrap() error { return a.err }
+
 // Execute runs the root command.
+// Any error from cobra (unknown flags, missing args, etc.) is printed styled.
 func Execute() error {
-	return rootCmd.Execute()
+	err := rootCmd.Execute()
+	if err != nil {
+		var ap *alreadyPrinted
+		if !errors.As(err, &ap) {
+			fmt.Fprint(os.Stderr, pipelines.FormatError(err))
+		}
+	}
+	return err
 }

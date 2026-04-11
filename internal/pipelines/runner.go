@@ -37,8 +37,14 @@ func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 	}
 }
 
+// RunOptions controls which phases of the pipeline to execute.
+type RunOptions struct {
+	Build  bool
+	Deploy bool
+}
+
 // Run executes the pipeline for the specified environment.
-func (r *Runner) Run(ctx context.Context, envName string) error {
+func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error {
 	env, ok := r.Config.Environments[envName]
 	if !ok {
 		return &PipelineError{
@@ -51,17 +57,21 @@ func (r *Runner) Run(ctx context.Context, envName string) error {
 
 	start := time.Now()
 
-	r.printHeader(envName, env)
+	r.printHeader(envName, env, opts)
 	r.resolveProviders(envName)
 
-	if err := r.processArtifacts(ctx, env); err != nil {
-		r.printFailure(start, err)
-		return err
+	if opts.Build {
+		if err := r.processArtifacts(ctx, env); err != nil {
+			r.printFailure(start, err)
+			return err
+		}
 	}
 
-	if err := r.processDeploy(ctx, envName, env); err != nil {
-		r.printFailure(start, err)
-		return err
+	if opts.Deploy {
+		if err := r.processDeploy(ctx, envName, env); err != nil {
+			r.printFailure(start, err)
+			return err
+		}
 	}
 
 	r.printFooter(start)
@@ -73,15 +83,24 @@ func (r *Runner) resolveWorkdir(art *Artifact) string {
 	return filepath.Join(r.Workdir, art.EffectiveWorkdir())
 }
 
-func (r *Runner) printHeader(envName string, env *Environment) {
+func (r *Runner) printHeader(envName string, env *Environment, opts RunOptions) {
 	mode := "LIVE"
 	if r.DryRun {
 		mode = "DRY-RUN"
 	}
 
+	var phases []string
+	if opts.Build {
+		phases = append(phases, "build")
+	}
+	if opts.Deploy {
+		phases = append(phases, "deploy")
+	}
+
 	r.Log.Separator()
 	r.Log.Header(fmt.Sprintf("Pipeline Run [%s]", mode))
-	r.Log.Info(fmt.Sprintf("environment: %s | strategy: %s | workdir: %s", envName, env.Strategy, r.Workdir))
+	r.Log.Info(fmt.Sprintf("environment: %s | strategy: %s | phases: %s", envName, env.Strategy, strings.Join(phases, ", ")))
+	r.Log.Info(fmt.Sprintf("workdir: %s", r.Workdir))
 	if env.PromotesFrom != "" {
 		r.Log.Info(fmt.Sprintf("promotes from: %s", env.PromotesFrom))
 	}

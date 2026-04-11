@@ -90,14 +90,10 @@ func Load(ctx context.Context, path string, cliVersion string) (*Config, error) 
 		return nil, err
 	}
 
-	cfg, err := parseOutput(raw)
+	strict := cliVersion != "" && cliVersion != "dev"
+	cfg, err := parseOutput(raw, strict)
 	if err != nil {
-		return nil, &PipelineError{
-			Phase:   "parse",
-			Summary: "Failed to parse pipeline output",
-			Details: []string{err.Error()},
-			Hint:    "ensure the pipeline file has a top-level 'config' field matching #PipelineFile",
-		}
+		return nil, err
 	}
 
 	if errs := validate(cfg); len(errs) > 0 {
@@ -219,10 +215,15 @@ func cueExport(ctx context.Context, absPath string) ([]byte, error) {
 	return out, nil
 }
 
-func parseOutput(data []byte) (*Config, error) {
+func parseOutput(data []byte, strict bool) (*Config, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
+		return nil, &PipelineError{
+			Phase:   "parse",
+			Summary: "Failed to parse pipeline output",
+			Details: []string{err.Error()},
+			Hint:    "ensure the pipeline file has a top-level 'config' field matching #PipelineFile",
+		}
 	}
 
 	payload := data
@@ -230,21 +231,30 @@ func parseOutput(data []byte) (*Config, error) {
 		payload = configData
 	}
 
-	// Use strict decoding to detect unknown fields from a newer schema version.
-	var cfg Config
-	dec := json.NewDecoder(strings.NewReader(string(payload)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&cfg); err != nil {
-		// Try again without strict mode to get partial config for diagnostics.
-		var fallback Config
-		if jsonErr := json.Unmarshal(payload, &fallback); jsonErr != nil {
-			return nil, fmt.Errorf("cannot decode config: %w", err)
+	if strict {
+		// Use strict decoding to detect unknown fields from a newer schema version.
+		var cfg Config
+		dec := json.NewDecoder(strings.NewReader(string(payload)))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg); err != nil {
+			return nil, &PipelineError{
+				Phase:   "compat",
+				Summary: "Schema version is not compatible with this CLI",
+				Details: []string{err.Error()},
+				Hint:    "upgrade NitroCLI to a version that supports this schema, or downgrade the schema version",
+			}
 		}
+		return &cfg, nil
+	}
+
+	// In dev mode, use lenient decoding (ignore unknown fields).
+	var cfg Config
+	if err := json.Unmarshal(payload, &cfg); err != nil {
 		return nil, &PipelineError{
-			Phase:   "compat",
-			Summary: "Schema version is not compatible with this CLI",
+			Phase:   "parse",
+			Summary: "Failed to parse pipeline output",
 			Details: []string{err.Error()},
-			Hint:    "upgrade NitroCLI to a version that supports this schema, or downgrade the schema version",
+			Hint:    "ensure the pipeline file has a top-level 'config' field matching #PipelineFile",
 		}
 	}
 
@@ -345,7 +355,7 @@ func validate(cfg *Config) []string {
 	}
 
 	// Provider checks.
-	validProviderTypes := map[string]bool{"bitwarden": true}
+	validProviderTypes := map[string]bool{"bitwarden": true, "env": true}
 	for name, p := range cfg.Providers {
 		if !validProviderTypes[p.Type] {
 			errs = append(errs, fmt.Sprintf(

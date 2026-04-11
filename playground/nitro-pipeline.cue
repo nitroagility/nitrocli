@@ -9,15 +9,13 @@ config: pipelines.#PipelineFile & {
 	// ============================================================
 
 	providers: {
-		"nitro-bitwarden": {
-			type:     "bitwarden"
+		"local-env": {
+			type:     "env"
 			priority: 1
-			url:      "https://vault.bitwarden.com"
 			envs:     ["dev", "uat", "prod"]
 			variables: [
-				{name: "DOCKER_PASSWORD", path: "collection/docker-credentials/password", secret: true},
-				{name: "JFROG_PASSWORD", path: "collection/jfrog-credentials/password", secret: true},
-				{name: "GITHUB_TOKEN", path: "collection/github-token/password", secret: true},
+				{name: "GITHUB_TOKEN", path: "GITHUB_TOKEN", secret: true},
+				{name: "BUILD_VERSION", path: "BUILD_VERSION", secret: false},
 			]
 		}
 	}

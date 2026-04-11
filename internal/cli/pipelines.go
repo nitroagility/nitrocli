@@ -20,7 +20,7 @@ func resolveWorkdir(cmd *cobra.Command) (string, error) {
 
 func pipelineError(err error) error {
 	fmt.Fprint(os.Stderr, pipelines.FormatError(err))
-	return err
+	return &alreadyPrinted{err: err}
 }
 
 func newPipelinesCmd() *cobra.Command {
@@ -38,6 +38,8 @@ func newPipelinesCmd() *cobra.Command {
 			pipelineFile, _ := cmd.Flags().GetString("pipeline")
 			envName, _ := cmd.Flags().GetString("env")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			doBuild, _ := cmd.Flags().GetBool("build")
+			doDeploy, _ := cmd.Flags().GetBool("deploy")
 
 			if envName == "" {
 				return pipelineError(&pipelines.PipelineError{
@@ -48,9 +50,23 @@ func newPipelinesCmd() *cobra.Command {
 				})
 			}
 
+			if !doBuild && !doDeploy {
+				return pipelineError(&pipelines.PipelineError{
+					Phase:   "args",
+					Summary: "No phase selected",
+					Details: []string{"at least one of --build or --deploy must be specified"},
+					Hint:    "usage: nitro pipelines run --env <environment> --build --deploy",
+				})
+			}
+
 			workdir, err := resolveWorkdir(cmd)
 			if err != nil {
 				return pipelineError(err)
+			}
+
+			// Resolve pipeline file relative to workdir.
+			if !filepath.IsAbs(pipelineFile) {
+				pipelineFile = filepath.Join(workdir, pipelineFile)
 			}
 
 			cfg, err := pipelines.Load(cmd.Context(), pipelineFile, Version)
@@ -58,8 +74,12 @@ func newPipelinesCmd() *cobra.Command {
 				return pipelineError(err)
 			}
 
+			opts := pipelines.RunOptions{
+				Build:  doBuild,
+				Deploy: doDeploy,
+			}
 			runner := pipelines.NewRunner(cfg, dryRun, workdir)
-			if err := runner.Run(cmd.Context(), envName); err != nil {
+			if err := runner.Run(cmd.Context(), envName, opts); err != nil {
 				return pipelineError(err)
 			}
 
@@ -70,6 +90,8 @@ func newPipelinesCmd() *cobra.Command {
 	runCmd.Flags().StringP("pipeline", "p", "nitro-pipeline.cue", "path to the pipeline CUE file")
 	runCmd.Flags().StringP("env", "e", "", "target environment")
 	runCmd.Flags().BoolP("dry-run", "n", false, "print commands without executing")
+	runCmd.Flags().Bool("build", false, "run the build phase")
+	runCmd.Flags().Bool("deploy", false, "run the deploy phase")
 
 	cmd.AddCommand(runCmd)
 	return cmd

@@ -2,6 +2,7 @@ package pipelines
 
 import (
 	"fmt"
+	"os"
 	"sort"
 )
 
@@ -36,8 +37,7 @@ func (r *ProviderResolver) Resolve(providers map[string]*Provider, envName strin
 				continue
 			}
 
-			// TODO: implement actual provider resolution (bitwarden, vault, etc.)
-			value := fmt.Sprintf("{{ .%s }}", v.Name)
+			value := r.resolveVariable(entry.provider, v)
 			vars[v.Name] = value
 
 			if v.IsSecret() {
@@ -50,6 +50,28 @@ func (r *ProviderResolver) Resolve(providers map[string]*Provider, envName strin
 	r.Log.Info(fmt.Sprintf("session: %d variables loaded (%d secrets masked)", len(vars), secretCount))
 
 	return vars
+}
+
+func (r *ProviderResolver) resolveVariable(p *Provider, v *Variable) string {
+	switch p.Type {
+	case "env":
+		return r.resolveEnvVariable(v)
+	case "bitwarden":
+		// TODO: implement bitwarden resolution via CLI or API.
+		return fmt.Sprintf("{{ .%s }}", v.Name)
+	default:
+		return fmt.Sprintf("{{ .%s }}", v.Name)
+	}
+}
+
+func (r *ProviderResolver) resolveEnvVariable(v *Variable) string {
+	// Path is the OS environment variable name to read from.
+	value, ok := os.LookupEnv(v.Path)
+	if !ok {
+		r.Log.Fail(fmt.Sprintf("  env variable %q not set (expected in $%s)", v.Name, v.Path))
+		return ""
+	}
+	return value
 }
 
 type providerEntry struct {
