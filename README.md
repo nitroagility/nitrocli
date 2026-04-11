@@ -14,9 +14,7 @@
   <a href="https://github.com/nitroagility/nitrocli"><img src="https://img.shields.io/github/stars/nitroagility/nitrocli?style=flat-square&color=00c8ff" alt="Stars"></a>
 </p>
 
----
-
-```
+```sh
 $ nitro
 Fast. Minimal. Powerful.
 Manage your software and operations from the terminal.
