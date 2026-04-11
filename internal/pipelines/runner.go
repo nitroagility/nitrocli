@@ -14,6 +14,7 @@ type Runner struct {
 	Config   *Config
 	DryRun   bool
 	Workdir  string
+	envName  string
 	Commands *CommandBuilder
 	Executor *Executor
 	Provider *ProviderResolver
@@ -56,10 +57,17 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 		}
 	}
 
+	r.envName = envName
 	start := time.Now()
 
 	r.printHeader(envName, env, opts)
 	r.resolveProviders(envName, opts)
+
+	// Global preRun.
+	if err := r.runHooks(ctx, r.envName, "Global pre-run", r.Config.PreRun); err != nil {
+		r.printFailure(start, err)
+		return err
+	}
 
 	if opts.Build {
 		if err := r.runBuildPhase(ctx, env, opts); err != nil {
@@ -73,6 +81,12 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 			r.printFailure(start, err)
 			return err
 		}
+	}
+
+	// Global postRun.
+	if err := r.runHooks(ctx, r.envName, "Global post-run", r.Config.PostRun); err != nil {
+		r.printFailure(start, err)
+		return err
 	}
 
 	r.printFooter(start)
@@ -136,7 +150,7 @@ func (r *Runner) resolveProviders(envName string, opts RunOptions) {
 func (r *Runner) runBuildPhase(ctx context.Context, env *Environment, opts RunOptions) error {
 	// Build preRun.
 	if env.Build != nil {
-		if err := r.runHooks(ctx, "Build pre-run", env.Build.PreRun); err != nil {
+		if err := r.runHooks(ctx, r.envName, "Build pre-run", env.Build.PreRun); err != nil {
 			return err
 		}
 	}
@@ -148,7 +162,7 @@ func (r *Runner) runBuildPhase(ctx context.Context, env *Environment, opts RunOp
 
 	// Build postRun.
 	if env.Build != nil {
-		if err := r.runHooks(ctx, "Build post-run", env.Build.PostRun); err != nil {
+		if err := r.runHooks(ctx, r.envName, "Build post-run", env.Build.PostRun); err != nil {
 			return err
 		}
 	}
@@ -182,7 +196,7 @@ func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, en
 	workdir := r.resolveWorkdir(art)
 
 	// Artifact preRun.
-	if err := r.runHooks(ctx, fmt.Sprintf("%s pre-run", name), art.PreRun); err != nil {
+	if err := r.runHooks(ctx, r.envName, fmt.Sprintf("%s pre-run", name), art.PreRun); err != nil {
 		return err
 	}
 
@@ -203,7 +217,7 @@ func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, en
 	}
 
 	// Artifact postRun.
-	if err := r.runHooks(ctx, fmt.Sprintf("%s post-run", name), art.PostRun); err != nil {
+	if err := r.runHooks(ctx, r.envName, fmt.Sprintf("%s post-run", name), art.PostRun); err != nil {
 		return err
 	}
 
@@ -226,8 +240,9 @@ func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment,
 func (r *Runner) runBinaryBuild(ctx context.Context, art *Artifact, workdir string) error {
 	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
 
-	for i, s := range art.Build {
-		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(art.Build), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
+	steps := filterSteps(art.Build, r.envName)
+	for i, s := range steps {
+		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
 		args := r.Commands.BuildStepCommand(&s)
 		if err := r.Executor.Run(ctx, args, workdir); err != nil {
 			return err
@@ -244,8 +259,9 @@ func (r *Runner) runBinaryBuild(ctx context.Context, art *Artifact, workdir stri
 func (r *Runner) runPackage(ctx context.Context, art *Artifact, workdir string) error {
 	r.Log.Info(fmt.Sprintf("workdir: %s | language: %s", workdir, art.Language))
 
-	for i, s := range art.Build {
-		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(art.Build), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
+	steps := filterSteps(art.Build, r.envName)
+	for i, s := range steps {
+		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
 		args := r.Commands.BuildStepCommand(&s)
 		if err := r.Executor.Run(ctx, args, workdir); err != nil {
 			return err
@@ -264,7 +280,7 @@ func (r *Runner) runDeployPhase(ctx context.Context, envName string, env *Enviro
 	}
 
 	// Deploy preRun.
-	if err := r.runHooks(ctx, "Deploy pre-run", env.Deploy.PreRun); err != nil {
+	if err := r.runHooks(ctx, r.envName, "Deploy pre-run", env.Deploy.PreRun); err != nil {
 		return err
 	}
 
@@ -287,7 +303,7 @@ func (r *Runner) runDeployPhase(ctx context.Context, envName string, env *Enviro
 	r.Log.Separator()
 
 	// Deploy postRun.
-	if err := r.runHooks(ctx, "Deploy post-run", env.Deploy.PostRun); err != nil {
+	if err := r.runHooks(ctx, r.envName, "Deploy post-run", env.Deploy.PostRun); err != nil {
 		return err
 	}
 
@@ -296,15 +312,20 @@ func (r *Runner) runDeployPhase(ctx context.Context, envName string, env *Enviro
 
 // ── Hooks ────────────────────────────────────────────
 
-func (r *Runner) runHooks(ctx context.Context, label string, steps []BuildStep) error {
+func (r *Runner) runHooks(ctx context.Context, envName string, label string, steps []BuildStep) error {
 	if len(steps) == 0 {
+		return nil
+	}
+
+	applicable := filterSteps(steps, envName)
+	if len(applicable) == 0 {
 		return nil
 	}
 
 	r.Log.Step(label)
 
-	for i, s := range steps {
-		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
+	for i, s := range applicable {
+		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(applicable), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
 		args := r.Commands.BuildStepCommand(&s)
 		if err := r.Executor.Run(ctx, args, r.Workdir); err != nil {
 			return fmt.Errorf("%s step %d failed: %w", label, i+1, err)
@@ -313,6 +334,16 @@ func (r *Runner) runHooks(ctx context.Context, label string, steps []BuildStep) 
 
 	r.Log.Separator()
 	return nil
+}
+
+func filterSteps(steps []BuildStep, envName string) []BuildStep {
+	var result []BuildStep
+	for _, s := range steps {
+		if s.AppliesToEnv(envName) {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // ── Footer ───────────────────────────────────────────

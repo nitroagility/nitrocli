@@ -5,6 +5,18 @@ import "github.com/nitroagility/nitrocli/pipelines@v0"
 config: pipelines.#PipelineFile & {
 
 	// ============================================================
+	// GLOBAL HOOKS
+	// ============================================================
+
+	preRun: [
+		{command: "echo", args: ["Pipeline started"]},
+	]
+
+	postRun: [
+		{command: "echo", args: ["Pipeline finished"]},
+	]
+
+	// ============================================================
 	// PROVIDERS
 	// ============================================================
 

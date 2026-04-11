@@ -8,7 +8,7 @@ type CommandBuilder struct{}
 // DockerBuild returns the docker buildx command for a docker artifact.
 // If buildNumber is provided, tags both :latest and :<buildNumber>.
 func (b *CommandBuilder) DockerBuild(art *Artifact, buildNumber string) []string {
-	args := []string{"docker", "buildx", "build", "--progress=plain"}
+	args := []string{"docker", "buildx", "build", "--progress=plain", "--provenance=false"}
 	for _, p := range art.Platforms {
 		args = append(args, "--platform", p)
 	}

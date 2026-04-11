@@ -4,8 +4,10 @@ package pipelines
 // Config is the top-level pipeline configuration.
 type Config struct {
 	Providers    map[string]*Provider    `json:"providers,omitempty"`
+	PreRun       []BuildStep             `json:"preRun,omitempty"`
 	Artifacts    map[string]*Artifact    `json:"artifacts"`
 	Environments map[string]*Environment `json:"environments"`
+	PostRun      []BuildStep             `json:"postRun,omitempty"`
 }
 
 // EnvironmentNames returns the list of available environment names.
@@ -113,6 +115,21 @@ type BuildStep struct {
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env,omitempty"`
 	Workdir string            `json:"workdir,omitempty"`
+	Envs    []string          `json:"envs,omitempty"`
+}
+
+// AppliesToEnv returns true if this step should run for the given environment.
+// If Envs is empty, the step runs for all environments.
+func (s *BuildStep) AppliesToEnv(envName string) bool {
+	if len(s.Envs) == 0 {
+		return true
+	}
+	for _, e := range s.Envs {
+		if e == envName {
+			return true
+		}
+	}
+	return false
 }
 
 // Repository defines where an artifact is stored or published.

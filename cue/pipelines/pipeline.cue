@@ -79,6 +79,7 @@ package pipelines
 	args:     [...string]
 	env?:     [string]: string
 	workdir?: string
+	envs?:    [...string]
 }
 
 #DockerArtifact: {
