@@ -46,11 +46,12 @@ jobs:
         working-directory: cue
         run: cue vet ./...
 
+      - name: Login to CUE registry
+        run: cue login --token ${{ secrets.CUE_REGISTRY_TOKEN }}
+
       - name: Publish to registry
         working-directory: cue
         run: cue mod publish ${{ github.ref_name }}
-        env:
-          CUE_REGISTRY_TOKEN: ${{ secrets.CUE_REGISTRY_TOKEN }}
 
   build:
     name: "Build Artifacts (${{ matrix.os }})"
