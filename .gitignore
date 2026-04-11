@@ -5,7 +5,7 @@
 *.so
 *.dylib
 *.test
-nitro
+./nitro
 
 # ── Build & CI ────────────────────────────────────────
 dist/
