@@ -4,6 +4,6 @@ language: {
 }
 deps: {
 	"github.com/nitroagility/nitrocli@v0": {
-		v: "v0.0.10"
+		v: "v0.0.11"
 	}
 }
