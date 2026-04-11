@@ -161,6 +161,8 @@ package pipelines
 
 #PipelineFile: {
 	providers?:   [id=string]:   #Provider
+	preRun?:      [...#BuildCommand]
 	artifacts:    [name=string]: #Artifact
 	environments: [name=string]: #Environment
+	postRun?:     [...#BuildCommand]
 }
