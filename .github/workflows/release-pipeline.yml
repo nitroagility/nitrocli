@@ -27,8 +27,34 @@ permissions:
   packages: write
 
 jobs:
+  cue-publish:
+    name: "Publish CUE Schemas"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUE
+        uses: cue-lang/setup-cue@v1.0.1
+        with:
+          version: latest
+
+      - name: Tidy module
+        working-directory: cue
+        run: cue mod tidy
+
+      - name: Validate schemas
+        working-directory: cue
+        run: cue vet ./...
+
+      - name: Publish to registry
+        working-directory: cue
+        run: cue mod publish ${{ github.ref_name }}
+        env:
+          CUE_REGISTRY_TOKEN: ${{ secrets.CUE_REGISTRY_TOKEN }}
+
   build:
     name: "Build Artifacts (${{ matrix.os }})"
+    needs: [cue-publish]
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
