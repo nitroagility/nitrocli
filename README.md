@@ -82,7 +82,7 @@ $env:PATH += ";$env:LOCALAPPDATA\nitrocli"
 ### Verify
 
 ```bash
-nitro --version
+nitro version
 ```
 
 ---
