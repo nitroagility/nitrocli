@@ -511,5 +511,4 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/osx,linux,windows,visualstudiocode,intellij+all,go,python,node
 
-playground
 ./nitro
