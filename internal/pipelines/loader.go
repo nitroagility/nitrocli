@@ -355,11 +355,20 @@ func validate(cfg *Config) []string {
 	}
 
 	// Provider checks.
-	validProviderTypes := map[string]bool{"bitwarden": true, "env": true, "composite": true}
+	validProviderTypes := map[string]bool{"bitwarden": true, "env": true, "transformer": true, "aws-secretsmanager": true}
+
+	// Track variable name → environments across all providers to detect duplicates.
+	// Key: variable name, Value: list of (provider, envs) pairs.
+	type varScope struct {
+		provider string
+		envs     []string // empty = all environments
+	}
+	varEnvMap := make(map[string][]varScope)
+
 	for name, p := range cfg.Providers {
 		if !validProviderTypes[p.Type] {
 			errs = append(errs, fmt.Sprintf(
-				"provider %q: unknown type %q (supported: bitwarden, env)",
+				"provider %q: unknown type %q (supported: env, aws-secretsmanager, bitwarden, transformer)",
 				name, p.Type,
 			))
 		}
@@ -371,19 +380,121 @@ func validate(cfg *Config) []string {
 					name, v.Name,
 				))
 			}
+
+			if v.IsSecret() && v.Default != nil {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: variable %q is a secret and must not have a default value — use 'nitro config set %s <value>' to store it securely",
+					name, v.Name, v.Name,
+				))
+			}
+
+			// Effective envs = intersection of provider envs and variable envs.
+			effectiveEnvs := effectiveVarEnvs(p.Envs, v.Envs)
+			varEnvMap[v.Name] = append(varEnvMap[v.Name], varScope{provider: name, envs: effectiveEnvs})
 		}
 
-		for _, cv := range p.Composites {
-			if strings.HasPrefix(cv.Name, "NITRO_") {
+		validTransformerTypes := map[string]bool{"envfile": true, "template": true, "": true}
+		for _, t := range p.Transformers {
+			if strings.HasPrefix(t.Name, "NITRO_") {
 				errs = append(errs, fmt.Sprintf(
-					"provider %q: composite %q uses reserved prefix NITRO_ — this prefix is reserved for NitroCLI internal use",
-					name, cv.Name,
+					"provider %q: transformer %q uses reserved prefix NITRO_ — this prefix is reserved for NitroCLI internal use",
+					name, t.Name,
 				))
+			}
+
+			if !validTransformerTypes[t.Type] {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: transformer %q has unknown type %q (supported: envfile, template)",
+					name, t.Name, t.Type,
+				))
+			}
+
+			if t.EffectiveType() == "template" && t.Format == "" {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: transformer %q has type \"template\" but no format field",
+					name, t.Name,
+				))
+			}
+
+			if t.IsSecret() && t.Default != nil {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: transformer %q is a secret and must not have a default value",
+					name, t.Name,
+				))
+			}
+
+			effectiveEnvs := effectiveVarEnvs(p.Envs, t.Envs)
+			varEnvMap[t.Name] = append(varEnvMap[t.Name], varScope{provider: name, envs: effectiveEnvs})
+		}
+	}
+
+	// Check for duplicate variable name + overlapping environments.
+	for varName, scopes := range varEnvMap {
+		if len(scopes) < 2 {
+			continue
+		}
+		for i := 0; i < len(scopes); i++ {
+			for j := i + 1; j < len(scopes); j++ {
+				if overlap := envsOverlap(scopes[i].envs, scopes[j].envs); overlap != "" {
+					errs = append(errs, fmt.Sprintf(
+						"variable %q is declared in providers %q and %q with overlapping environment %q — each variable name must be unique per environment",
+						varName, scopes[i].provider, scopes[j].provider, overlap,
+					))
+				}
 			}
 		}
 	}
 
 	return errs
+}
+
+// effectiveVarEnvs returns the effective environment list for a variable.
+// If the variable has its own envs, intersect with the provider envs.
+// If either is empty (meaning "all"), use the other.
+func effectiveVarEnvs(providerEnvs, varEnvs []string) []string {
+	if len(varEnvs) == 0 {
+		return providerEnvs // variable inherits provider scope
+	}
+	if len(providerEnvs) == 0 {
+		return varEnvs // provider applies to all, use variable scope
+	}
+	// Intersection.
+	pSet := make(map[string]bool, len(providerEnvs))
+	for _, e := range providerEnvs {
+		pSet[e] = true
+	}
+	var result []string
+	for _, e := range varEnvs {
+		if pSet[e] {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// envsOverlap returns the first overlapping environment between two scopes.
+// An empty slice means "all environments", which overlaps with everything.
+func envsOverlap(a, b []string) string {
+	if len(a) == 0 || len(b) == 0 {
+		// One side applies to all environments → always overlaps.
+		if len(a) == 0 && len(b) == 0 {
+			return "*"
+		}
+		if len(a) == 0 {
+			return b[0]
+		}
+		return a[0]
+	}
+	set := make(map[string]bool, len(a))
+	for _, e := range a {
+		set[e] = true
+	}
+	for _, e := range b {
+		if set[e] {
+			return e
+		}
+	}
+	return ""
 }
 
 func parseErrorLines(stderr string) []string {

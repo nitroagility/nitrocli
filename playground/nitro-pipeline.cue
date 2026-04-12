@@ -5,6 +5,17 @@ import "github.com/nitroagility/nitrocli/pipelines@v0"
 config: pipelines.#PipelineFile & {
 
 	// ============================================================
+	// GLOBALS — allowlist for ~/.nitro/config.json imports
+	// Only these variables can be resolved from the local config.
+	// ============================================================
+
+	globals: [
+		"GITHUB_TOKEN",
+		"DOCKER_PASSWORD",
+		"BWS_ACCESS_TOKEN",
+	]
+
+	// ============================================================
 	// GLOBAL HOOKS
 	// ============================================================
 
@@ -23,23 +34,62 @@ config: pipelines.#PipelineFile & {
 	providers: {
 		"local-env": {
 			type:     "env"
-			priority: 2
+			priority: 3
 			envs:     ["dev", "uat", "prod"]
 			variables: [
 				{name: "GITHUB_TOKEN", path: "GITHUB_TOKEN", secret: true},
 				{name: "BUILD_VERSION", path: "BUILD_VERSION", secret: false, default: "0.0.0-dev"},
 				{name: "ECR_URL", path: "ECR_URL", secret: false, default: "851725253520.dkr.ecr.eu-central-1.amazonaws.com"},
-				{name: "AWS_PROFILE", path: "AWS_PROFILE", secret: false, default: "default"},
 				{name: "DOCKER_USER", path: "DOCKER_USER", secret: false, default: "myorg"},
 				{name: "DOCKER_PASSWORD", path: "DOCKER_PASSWORD", secret: true},
+
+				// Per-environment variable mapping: same logical name, different source per env.
+				{name: "AWS_ACCOUNT_ID", path: "AWS_ACCOUNT_ID_DEV", secret: false, envs: ["dev"]},
+				{name: "AWS_ACCOUNT_ID", path: "AWS_ACCOUNT_ID_UAT", secret: false, envs: ["uat"]},
+				{name: "AWS_ACCOUNT_ID", path: "AWS_ACCOUNT_ID_PROD", secret: false, envs: ["prod"]},
 			]
 		}
+
+		// AWS Secrets Manager: reads secrets from AWS SM.
+		// path = secret name/ARN, key = optional JSON key extraction.
+		// Credentials via standard AWS SDK chain (env vars, shared config, IAM role).
+		"aws-secrets": {
+			type:     "aws-secretsmanager"
+			priority: 2
+			region:   "eu-central-1"
+			envs:     ["prod"]
+			variables: [
+				// Reads the entire secret as a single string.
+				{name: "DB_CONNECTION_STRING", path: "prod/database/connection", secret: true},
+
+				// Reads only the "username" key from a JSON secret.
+				{name: "DB_USERNAME", path: "prod/database/credentials", key: "username", secret: true},
+				{name: "DB_PASSWORD", path: "prod/database/credentials", key: "password", secret: true},
+			]
+		}
+
+		// Bitwarden Secrets Manager: reads secrets via bws CLI.
+		// path = Bitwarden secret UUID.
+		// Token via BWS_ACCESS_TOKEN env var or ~/.nitro/config.json.
+		"bitwarden-secrets": {
+			type:     "bitwarden"
+			priority: 2
+			envs:     ["dev", "uat"]
+			variables: [
+				{name: "DB_CONNECTION_STRING", path: "bf14e956-baed-11ed-afa1-0242ac120002", secret: true},
+			]
+		}
+
 		"docker-auth": {
-			type:     "composite"
+			type:     "transformer"
 			priority: 1
 			envs:     ["dev", "uat", "prod"]
-			composites: [
-				{name: "DOCKER_AUTH_B64", vars: ["DOCKER_USER", "DOCKER_PASSWORD"], secret: true, base64: true},
+			transformers: [
+				// envfile: produces DOCKER_USER=...\nDOCKER_PASSWORD=...
+				{type: "envfile", name: "DOCKER_AUTH_B64", vars: ["DOCKER_USER", "DOCKER_PASSWORD"], secret: true, base64: true},
+
+				// template: produces user:password using Go template
+				{type: "template", name: "DOCKER_AUTH_BASIC", vars: ["DOCKER_USER", "DOCKER_PASSWORD"], secret: true, format: "{{ .DOCKER_USER }}:{{ .DOCKER_PASSWORD }}"},
 			]
 		}
 	}

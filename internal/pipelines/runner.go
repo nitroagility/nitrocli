@@ -34,13 +34,20 @@ type RunOptions struct {
 func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 	masker := &Masker{}
 	log := &Logger{Masker: masker}
+
+	// Build globals allowlist for config.json lookups.
+	globals := make(map[string]bool, len(cfg.Globals))
+	for _, g := range cfg.Globals {
+		globals[g] = true
+	}
+
 	return &Runner{
 		Config:   cfg,
 		DryRun:   dryRun,
 		Workdir:  workdir,
 		Commands: &CommandBuilder{},
 		Executor: &Executor{DryRun: dryRun, Log: log, Masker: masker},
-		Provider: &ProviderResolver{Log: log, Masker: masker},
+		Provider: &ProviderResolver{Log: log, Masker: masker, Globals: globals},
 		Log:      log,
 	}
 }
@@ -61,7 +68,7 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 	start := time.Now()
 
 	r.printHeader(envName, env, opts)
-	r.resolveProviders(envName, opts)
+	r.resolveProviders(ctx, envName, opts)
 
 	// Global preRun.
 	if err := r.runHooks(ctx, r.envName, "Global pre-run", r.Config.PreRun); err != nil {
@@ -122,12 +129,12 @@ func (r *Runner) printHeader(envName string, env *Environment, opts RunOptions) 
 	r.Log.Separator()
 }
 
-func (r *Runner) resolveProviders(envName string, opts RunOptions) {
+func (r *Runner) resolveProviders(ctx context.Context, envName string, opts RunOptions) {
 	r.Log.Step("Resolving providers")
 
 	var vars map[string]string
 	if len(r.Config.Providers) > 0 {
-		vars = r.Provider.Resolve(r.Config.Providers, envName)
+		vars = r.Provider.Resolve(ctx, r.Config.Providers, envName)
 	} else {
 		vars = make(map[string]string)
 	}

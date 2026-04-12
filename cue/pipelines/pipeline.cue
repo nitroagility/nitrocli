@@ -7,14 +7,16 @@ package pipelines
 #ProviderVariable: {
 	name:     string & =~"^[A-Z][A-Z0-9_]+$"
 	path:     string
+	key?:     string
 	secret?:  *true | bool
 	default?: string
+	envs?:    [...string]
 }
 
 #BitwardenProvider: {
 	type:      "bitwarden"
 	priority:  int & >=1
-	url:       string | *"https://vault.bitwarden.com"
+	url?:      string
 	envs:      [...string]
 	variables: [...#ProviderVariable]
 }
@@ -26,21 +28,33 @@ package pipelines
 	variables: [...#ProviderVariable]
 }
 
-#CompositeVariable: {
+#AWSSecretsManagerProvider: {
+	type:      "aws-secretsmanager"
+	priority:  int & >=1
+	region:    string
+	envs:      [...string]
+	variables: [...#ProviderVariable]
+}
+
+#TransformerVariable: {
+	type?:    *"envfile" | "template"
 	name:     string & =~"^[A-Z][A-Z0-9_]+$"
 	vars:     [...string]
 	secret?:  *true | bool
+	default?: string
 	base64?:  *false | bool
+	format?:  string
+	envs?:    [...string]
 }
 
-#CompositeProvider: {
-	type:       "composite"
-	priority:   int & >=1
-	envs:       [...string]
-	composites: [...#CompositeVariable]
+#TransformerProvider: {
+	type:         "transformer"
+	priority:     int & >=1
+	envs:         [...string]
+	transformers: [...#TransformerVariable]
 }
 
-#Provider: #BitwardenProvider | #EnvProvider | #CompositeProvider
+#Provider: #BitwardenProvider | #EnvProvider | #AWSSecretsManagerProvider | #TransformerProvider
 
 // ============================================================
 // REPOSITORIES
@@ -160,6 +174,7 @@ package pipelines
 // ============================================================
 
 #PipelineFile: {
+	globals?:     [...string]
 	providers?:   [id=string]:   #Provider
 	preRun?:      [...#BuildCommand]
 	artifacts:    [name=string]: #Artifact
