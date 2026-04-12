@@ -3,6 +3,7 @@ package pipelines
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,7 +71,7 @@ func (b *bitwardenResolver) resolve(ctx context.Context, v *Variable) (string, e
 			return "", fmt.Errorf("bws secret get %q failed: %s", v.Path, string(exitErr.Stderr))
 		}
 		if isNotFound(err) {
-			return "", fmt.Errorf("bws CLI not found — install it: https://bitwarden.com/help/secrets-manager-cli/")
+			return "", errors.New("bws CLI not found — install it: https://bitwarden.com/help/secrets-manager-cli/")
 		}
 		return "", fmt.Errorf("bws secret get %q: %w", v.Path, err)
 	}

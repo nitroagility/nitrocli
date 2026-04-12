@@ -14,8 +14,8 @@ import (
 const (
 	dirName  = ".nitro"
 	fileName = "config.json"
-	dirPerm  = 0700
-	filePerm = 0600
+	dirPerm  = 0o700
+	filePerm = 0o600
 )
 
 // Entry is a single configuration value with metadata.
