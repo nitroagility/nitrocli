@@ -54,24 +54,27 @@ type bwsSecret struct {
 // resolve fetches a secret from Bitwarden Secrets Manager.
 // v.Path is the secret UUID in Bitwarden.
 // If v.Key is set and the secret value is JSON, extracts that specific key.
+// The access token is passed via environment variable (not CLI args) to avoid
+// exposing it in process listings (ps).
 func (b *bitwardenResolver) resolve(ctx context.Context, v *Variable) (string, error) {
-	args := []string{"secret", "get", v.Path, "--access-token", b.token, "--output", "json"}
+	args := []string{"secret", "get", v.Path, "--output", "json"}
 
 	cmd := exec.CommandContext(ctx, "bws", args...)
 
-	// Set server URL if configured (for self-hosted Bitwarden).
+	// Pass token and server URL via environment — never on the command line.
+	cmd.Env = append(os.Environ(), bwsTokenEnvVar+"="+b.token)
 	if b.url != "" {
-		cmd.Env = append(os.Environ(), "BWS_SERVER_URL="+b.url)
+		cmd.Env = append(cmd.Env, "BWS_SERVER_URL="+b.url)
 	}
 
 	out, err := cmd.Output()
 	if err != nil {
-		var exitErr *exec.ExitError
-		if ok := isExitError(err, &exitErr); ok {
-			return "", fmt.Errorf("bws secret get %q failed: %s", v.Path, string(exitErr.Stderr))
-		}
 		if isNotFound(err) {
 			return "", errors.New("bws CLI not found — install it: https://bitwarden.com/help/secrets-manager-cli/")
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", fmt.Errorf("bws secret get %q failed (exit %d)", v.Path, exitErr.ExitCode())
 		}
 		return "", fmt.Errorf("bws secret get %q: %w", v.Path, err)
 	}
@@ -85,34 +88,12 @@ func (b *bitwardenResolver) resolve(ctx context.Context, v *Variable) (string, e
 
 	// If key is specified, extract from JSON value.
 	if v.Key != "" {
-		var m map[string]any
-		if err := json.Unmarshal([]byte(raw), &m); err != nil {
-			return "", fmt.Errorf("secret %q value is not valid JSON (needed to extract key %q): %w", v.Path, v.Key, err)
-		}
-		val, ok := m[v.Key]
-		if !ok {
-			return "", fmt.Errorf("secret %q does not contain key %q", v.Path, v.Key)
-		}
-		switch tv := val.(type) {
-		case string:
-			return tv, nil
-		default:
-			b, _ := json.Marshal(tv)
-			return string(b), nil
-		}
+		return extractJSONKey(raw, v.Path, v.Key)
 	}
 
 	return raw, nil
 }
 
-func isExitError(err error, target **exec.ExitError) bool {
-	if e, ok := err.(*exec.ExitError); ok {
-		*target = e
-		return true
-	}
-	return false
-}
-
 func isNotFound(err error) bool {
-	return err == exec.ErrNotFound
+	return errors.Is(err, exec.ErrNotFound)
 }

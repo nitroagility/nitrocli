@@ -33,20 +33,58 @@ func configPath() (string, error) {
 	return filepath.Join(home, dirName, fileName), nil
 }
 
-// ensureDir creates ~/.nitro with restricted permissions if it doesn't exist.
+// ensureDir creates ~/.nitro with restricted permissions if it doesn't exist,
+// and enforces correct permissions if it already exists.
 func ensureDir() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cannot determine home directory: %w", err)
 	}
 	dir := filepath.Join(home, dirName)
-	return os.MkdirAll(dir, dirPerm)
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return fmt.Errorf("cannot create config directory: %w", err)
+	}
+	// Force correct permissions even if directory already existed.
+	return os.Chmod(dir, dirPerm)
+}
+
+// validatePath checks that the config file (if it exists) is a regular file
+// with correct permissions. Returns an error for symlinks or insecure permissions.
+func validatePath(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // file doesn't exist yet — OK
+		}
+		return fmt.Errorf("cannot stat config file: %w", err)
+	}
+
+	// Reject symlinks — prevents symlink attacks.
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config file %s is a symlink — refusing to read for security", path)
+	}
+
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("config file %s is not a regular file", path)
+	}
+
+	// Reject world-readable or group-readable files.
+	perm := fi.Mode().Perm()
+	if perm&0o077 != 0 {
+		return fmt.Errorf("config file %s has insecure permissions %04o (expected 0600) — run: chmod 600 %s", path, perm, path)
+	}
+
+	return nil
 }
 
 // readAll reads the config file and returns all entries.
 func readAll() (map[string]Entry, error) {
 	path, err := configPath()
 	if err != nil {
+		return nil, err
+	}
+
+	if err := validatePath(path); err != nil {
 		return nil, err
 	}
 
@@ -66,7 +104,8 @@ func readAll() (map[string]Entry, error) {
 	return entries, nil
 }
 
-// writeAll writes all entries to the config file with secure permissions.
+// writeAll writes all entries atomically using a temp file + rename.
+// This prevents partial writes and ensures the file is always valid.
 func writeAll(entries map[string]Entry) error {
 	if err := ensureDir(); err != nil {
 		return err
@@ -82,7 +121,43 @@ func writeAll(entries map[string]Entry) error {
 		return fmt.Errorf("failed to encode config: %w", err)
 	}
 
-	return os.WriteFile(path, append(data, '\n'), filePerm)
+	// Write to a temp file in the same directory, then rename atomically.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config.tmp.*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	// Ensure cleanup on any failure path.
+	success := false
+	defer func() {
+		if !success {
+			os.Remove(tmpName)
+		}
+	}()
+
+	if err := os.Chmod(tmpName, filePerm); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to set temp file permissions: %w", err)
+	}
+
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Atomic rename.
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	success = true
+	return nil
 }
 
 // Set stores a key-value pair in the config file.

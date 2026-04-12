@@ -261,6 +261,15 @@ func parseOutput(data []byte, strict bool) (*Config, error) {
 	return &cfg, nil
 }
 
+// dangerousEnvVars is a blocklist of system environment variables that must not
+// be overridden by pipeline variables — prevents privilege escalation and injection.
+var dangerousEnvVars = map[string]bool{
+	"PATH": true, "HOME": true, "SHELL": true, "USER": true, "LOGNAME": true,
+	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "DYLD_INSERT_LIBRARIES": true,
+	"DYLD_LIBRARY_PATH": true, "DYLD_FRAMEWORK_PATH": true,
+	"IFS": true, "ENV": true, "BASH_ENV": true, "CDPATH": true,
+}
+
 func validate(cfg *Config) []string {
 	var errs []string
 
@@ -381,6 +390,13 @@ func validate(cfg *Config) []string {
 				))
 			}
 
+			if dangerousEnvVars[v.Name] {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: variable %q overrides a protected system variable — this is blocked for security",
+					name, v.Name,
+				))
+			}
+
 			if v.IsSecret() && v.Default != nil {
 				errs = append(errs, fmt.Sprintf(
 					"provider %q: variable %q is a secret and must not have a default value — use 'nitro config set %s <value>' to store it securely",
@@ -445,7 +461,61 @@ func validate(cfg *Config) []string {
 		}
 	}
 
+	// Check for circular references in transformers.
+	// Build a graph: transformer name → set of vars it references.
+	transformerVars := make(map[string][]string)
+	for _, p := range cfg.Providers {
+		for _, t := range p.Transformers {
+			transformerVars[t.Name] = t.Vars
+		}
+	}
+	if cycle := detectCycle(transformerVars); cycle != "" {
+		errs = append(errs, fmt.Sprintf("circular reference detected in transformers: %s", cycle))
+	}
+
 	return errs
+}
+
+// detectCycle performs DFS cycle detection on a transformer dependency graph.
+// Returns a description of the cycle if found, or "" if no cycle exists.
+func detectCycle(graph map[string][]string) string {
+	const (
+		unvisited = 0
+		visiting  = 1
+		visited   = 2
+	)
+	state := make(map[string]int, len(graph))
+
+	var dfs func(node string, path []string) string
+	dfs = func(node string, path []string) string {
+		if state[node] == visited {
+			return ""
+		}
+		if state[node] == visiting {
+			return strings.Join(append(path, node), " → ")
+		}
+
+		deps, isTransformer := graph[node]
+		if !isTransformer {
+			return "" // leaf variable, not a transformer
+		}
+
+		state[node] = visiting
+		for _, dep := range deps {
+			if cycle := dfs(dep, append(path, node)); cycle != "" {
+				return cycle
+			}
+		}
+		state[node] = visited
+		return ""
+	}
+
+	for name := range graph {
+		if cycle := dfs(name, nil); cycle != "" {
+			return cycle
+		}
+	}
+	return ""
 }
 
 // effectiveVarEnvs returns the effective environment list for a variable.

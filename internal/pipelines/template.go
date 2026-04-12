@@ -26,6 +26,12 @@ func NewTemplateEngine(envVars map[string]string) *TemplateEngine {
 	}
 }
 
+// Eval evaluates a single string as a Go template.
+// Non-template strings are returned unchanged.
+func (t *TemplateEngine) Eval(s string) (string, error) {
+	return t.eval(s)
+}
+
 // EvalArgs evaluates templates in each argument string.
 // Non-template strings are returned unchanged.
 func (t *TemplateEngine) EvalArgs(args []string) ([]string, error) {
@@ -40,8 +46,15 @@ func (t *TemplateEngine) EvalArgs(args []string) ([]string, error) {
 	return result, nil
 }
 
+// safeFuncs is a restricted function map — blocks dangerous builtins like `call`.
+var safeFuncs = template.FuncMap{
+	"call": func(...any) (string, error) {
+		return "", fmt.Errorf("call is not allowed in templates")
+	},
+}
+
 func (t *TemplateEngine) eval(s string) (string, error) {
-	tmpl, err := template.New("").Option("missingkey=error").Parse(s)
+	tmpl, err := template.New("").Funcs(safeFuncs).Option("missingkey=error").Parse(s)
 	if err != nil {
 		return s, nil //nolint:nilerr // not a template, return as-is
 	}

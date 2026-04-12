@@ -25,6 +25,34 @@ func (e *Executor) SetEnv(vars map[string]string) {
 	e.template = NewTemplateEngine(vars)
 }
 
+// EvalEnvValues evaluates templates in all resolved variable values.
+// This handles defaults containing {{ .Env.XXX }} references.
+func (e *Executor) EvalEnvValues() {
+	if e.template == nil {
+		return
+	}
+	for k, v := range e.envVars {
+		resolved, err := e.template.Eval(v)
+		if err == nil && resolved != v {
+			e.envVars[k] = resolved
+		}
+	}
+	// Rebuild template engine with resolved values.
+	e.template = NewTemplateEngine(e.envVars)
+}
+
+// EvalString evaluates a single string through the template engine.
+func (e *Executor) EvalString(s string) string {
+	if e.template == nil {
+		return s
+	}
+	resolved, err := e.template.Eval(s)
+	if err != nil {
+		return s
+	}
+	return resolved
+}
+
 // Run evaluates templates in args, then executes the command.
 // In dry-run mode it only prints the resolved command.
 // All stdout/stderr output is masked before being written to the terminal.

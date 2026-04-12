@@ -2,7 +2,6 @@ package pipelines
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -53,25 +52,7 @@ func (a *awsResolver) resolve(ctx context.Context, v *Variable) (string, error) 
 		return raw, nil
 	}
 
-	// Extract a single key from a JSON secret.
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return "", fmt.Errorf("secret %q is not valid JSON (needed to extract key %q): %w", v.Path, v.Key, err)
-	}
-
-	val, ok := m[v.Key]
-	if !ok {
-		return "", fmt.Errorf("secret %q does not contain key %q", v.Path, v.Key)
-	}
-
-	// Return the value as a string regardless of JSON type.
-	switch tv := val.(type) {
-	case string:
-		return tv, nil
-	default:
-		b, _ := json.Marshal(tv)
-		return string(b), nil
-	}
+	return extractJSONKey(raw, v.Path, v.Key)
 }
 
 func (a *awsResolver) getRaw(ctx context.Context, path string) (string, error) {

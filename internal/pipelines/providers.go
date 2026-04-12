@@ -171,7 +171,7 @@ func (r *ProviderResolver) resolveTransformers(p *Provider, vars map[string]stri
 // evalFormat renders a Go template using the referenced variable values as context.
 // Template syntax: {{ .VAR_NAME }}
 func (r *ProviderResolver) evalFormat(name, format string, vars map[string]string) (string, error) {
-	tmpl, err := template.New(name).Parse(format)
+	tmpl, err := template.New(name).Funcs(safeFuncs).Parse(format)
 	if err != nil {
 		return "", fmt.Errorf("invalid template: %w", err)
 	}

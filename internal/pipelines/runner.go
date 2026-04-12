@@ -101,8 +101,26 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 }
 
 // resolveWorkdir joins the base workdir with the artifact's workdir.
-func (r *Runner) resolveWorkdir(art *Artifact) string {
-	return filepath.Join(r.Workdir, art.EffectiveWorkdir())
+// The artifact workdir is template-evaluated to support {{ .Env.XXX }} references.
+// Returns an error if the resolved path escapes the base workdir (path traversal).
+func (r *Runner) resolveWorkdir(art *Artifact) (string, error) {
+	artWorkdir := r.Executor.EvalString(art.EffectiveWorkdir())
+	resolved := filepath.Join(r.Workdir, artWorkdir)
+
+	absResolved, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve workdir: %w", err)
+	}
+	absBase, err := filepath.Abs(r.Workdir)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve base workdir: %w", err)
+	}
+
+	if !strings.HasPrefix(absResolved, absBase) {
+		return "", fmt.Errorf("workdir %q escapes base directory %q — path traversal blocked", artWorkdir, r.Workdir)
+	}
+
+	return resolved, nil
 }
 
 func (r *Runner) printHeader(envName string, env *Environment, opts RunOptions) {
@@ -149,6 +167,10 @@ func (r *Runner) resolveProviders(ctx context.Context, envName string, opts RunO
 	}
 
 	r.Executor.SetEnv(vars)
+
+	// Evaluate templates in resolved values (handles defaults with {{ .Env.XXX }}).
+	r.Executor.EvalEnvValues()
+
 	r.Log.Separator()
 }
 
@@ -200,14 +222,16 @@ func (r *Runner) processArtifacts(ctx context.Context, env *Environment, opts Ru
 func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, env *Environment, opts RunOptions) error {
 	r.Log.Step(fmt.Sprintf("%s (%s)", name, art.Type))
 
-	workdir := r.resolveWorkdir(art)
+	workdir, err := r.resolveWorkdir(art)
+	if err != nil {
+		return err
+	}
 
 	// Artifact preRun.
 	if err := r.runHooks(ctx, r.envName, fmt.Sprintf("%s pre-run", name), art.PreRun); err != nil {
 		return err
 	}
 
-	var err error
 	switch {
 	case art.IsDocker():
 		err = r.runDocker(ctx, art, env, opts, workdir)
