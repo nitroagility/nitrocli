@@ -20,7 +20,7 @@ config: pipelines.#PipelineFile & {
 	// ============================================================
 
 	preRun: [
-		{command: "echo", args: ["[global] Pipeline started for {{ .Env.NITRO_ENV }} environment"]},
+		{command: "echo", args: ["[global] Pipeline started for {{ .Env.BWS_ACCESS_TOKEN }} environment"]},
 	]
 
 	postRun: [
