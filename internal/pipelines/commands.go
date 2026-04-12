@@ -23,7 +23,7 @@ func (b *CommandBuilder) DockerBuild(art *Artifact, buildNumber string) []string
 	if buildNumber != "" {
 		args = append(args, "-t", image+":"+buildNumber)
 	}
-	args = append(args, "--push", art.EffectiveWorkdir())
+	args = append(args, "--push", ".")
 	return args
 }
 
