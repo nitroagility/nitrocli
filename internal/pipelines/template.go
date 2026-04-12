@@ -2,12 +2,13 @@ package pipelines
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"text/template"
 )
 
 // TemplateContext holds all namespaced data available in command templates.
-// Templates use {{ .env.VARIABLE }} syntax.
+// Templates use {{ .Env.VARIABLE }} syntax.
 type TemplateContext struct {
 	Env map[string]string `json:"env"`
 }
@@ -49,7 +50,7 @@ func (t *TemplateEngine) EvalArgs(args []string) ([]string, error) {
 // safeFuncs is a restricted function map — blocks dangerous builtins like `call`.
 var safeFuncs = template.FuncMap{
 	"call": func(...any) (string, error) {
-		return "", fmt.Errorf("call is not allowed in templates")
+		return "", errors.New("call is not allowed in templates")
 	},
 }
 

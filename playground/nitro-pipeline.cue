@@ -4,32 +4,19 @@ import "github.com/nitroagility/nitrocli/pipelines@v0"
 
 config: pipelines.#PipelineFile & {
 
-	// ============================================================
-	// GLOBALS — allowlist for ~/.nitro/config.json imports
-	// Only these variables can be resolved from the local config.
-	// ============================================================
-
 	globals: [
 		"GITHUB_TOKEN",
 		"DOCKER_PASSWORD",
 		"BWS_ACCESS_TOKEN",
 	]
 
-	// ============================================================
-	// GLOBAL HOOKS
-	// ============================================================
-
 	preRun: [
-		{command: "echo", args: ["[global] Pipeline started for {{ .Env.BWS_ACCESS_TOKEN }} environment"]},
+		{command: "echo", args: ["[global] Pipeline started for {{ .Env.NITRO_ENV }} environment"]},
 	]
 
 	postRun: [
 		{command: "echo", args: ["[global] Pipeline finished for {{ .Env.NITRO_ENV }} environment"]},
 	]
-
-	// ============================================================
-	// PROVIDERS
-	// ============================================================
 
 	providers: {
 		"local-env": {
@@ -42,35 +29,24 @@ config: pipelines.#PipelineFile & {
 				{name: "ECR_URL", path: "ECR_URL", secret: false, default: "851725253520.dkr.ecr.eu-central-1.amazonaws.com"},
 				{name: "DOCKER_USER", path: "DOCKER_USER", secret: false, default: "myorg"},
 				{name: "DOCKER_PASSWORD", path: "DOCKER_PASSWORD", secret: true},
-
-				// Per-environment variable mapping: same logical name, different source per env.
 				{name: "AWS_ACCOUNT_ID", path: "AWS_ACCOUNT_ID_DEV", secret: false, envs: ["dev"]},
 				{name: "AWS_ACCOUNT_ID", path: "AWS_ACCOUNT_ID_UAT", secret: false, envs: ["uat"]},
 				{name: "AWS_ACCOUNT_ID", path: "AWS_ACCOUNT_ID_PROD", secret: false, envs: ["prod"]},
 			]
 		}
 
-		// AWS Secrets Manager: reads secrets from AWS SM.
-		// path = secret name/ARN, key = optional JSON key extraction.
-		// Credentials via standard AWS SDK chain (env vars, shared config, IAM role).
 		"aws-secrets": {
 			type:     "aws-secretsmanager"
 			priority: 2
 			region:   "eu-central-1"
 			envs:     ["prod"]
 			variables: [
-				// Reads the entire secret as a single string.
 				{name: "DB_CONNECTION_STRING", path: "prod/database/connection", secret: true},
-
-				// Reads only the "username" key from a JSON secret.
 				{name: "DB_USERNAME", path: "prod/database/credentials", key: "username", secret: true},
 				{name: "DB_PASSWORD", path: "prod/database/credentials", key: "password", secret: true},
 			]
 		}
 
-		// Bitwarden Secrets Manager: reads secrets via bws CLI.
-		// path = Bitwarden secret UUID.
-		// Token via BWS_ACCESS_TOKEN env var or ~/.nitro/config.json.
 		"bitwarden-secrets": {
 			type:     "bitwarden"
 			priority: 2
@@ -85,37 +61,30 @@ config: pipelines.#PipelineFile & {
 			priority: 1
 			envs:     ["dev", "uat", "prod"]
 			transformers: [
-				// envfile: produces DOCKER_USER=...\nDOCKER_PASSWORD=...
 				{type: "envfile", name: "DOCKER_AUTH_B64", vars: ["DOCKER_USER", "DOCKER_PASSWORD"], secret: true, base64: true},
-
-				// template: produces user:password using Go template
 				{type: "template", name: "DOCKER_AUTH_BASIC", vars: ["DOCKER_USER", "DOCKER_PASSWORD"], secret: true, format: "{{ .DOCKER_USER }}:{{ .DOCKER_PASSWORD }}"},
 			]
 		}
 	}
-
-	// ============================================================
-	// ARTIFACTS
-	// ============================================================
 
 	artifacts: {
 		"api-gateway": {
 			type:       "docker"
 			workdir:    "./services/api-gateway"
 			dockerfile: "./Dockerfile"
-			platforms:  ["linux/amd64", "linux/arm64"]
+			platforms:  ["linux/amd64"]
 			buildArgs: {
-				GO_VERSION:    "1.22"
 				BUILD_VERSION: "{{ .Env.BUILD_VERSION }}"
-				GITHUB_TOKEN:  "{{ .Env.GITHUB_TOKEN }}"
 			}
-			preRun: [
-				{command: "echo", args: ["[artifact] ECR login for api-gateway on {{ .Env.ECR_URL }}"]},
-				{command: "echo", args: ["[artifact] Ensuring ECR repo api-gateway exists"]},
+			postBuild: [
+				{command: "echo", args: ["[artifact] api-gateway:{{ .Env.NITRO_BUILD_NUMBER }} built"]},
 			]
-			postRun: [
-				{command: "echo", args: ["[artifact] api-gateway:{{ .Env.NITRO_BUILD_NUMBER }} pushed to {{ .Env.ECR_URL }}"]},
-			]
+			promote: {
+				type: "script"
+				steps: [
+					{command: "echo", args: ["[promote] re-tagging api-gateway from {{ .Env.NITRO_ENV }}"]},
+				]
+			}
 			repository: {
 				type:  "registry"
 				url:   "{{ .Env.ECR_URL }}"
@@ -131,12 +100,12 @@ config: pipelines.#PipelineFile & {
 			buildArgs: {
 				BUILD_VERSION: "{{ .Env.BUILD_VERSION }}"
 			}
-			preRun: [
-				{command: "echo", args: ["[artifact] Ensuring ECR repo payment-service exists"]},
-			]
-			postRun: [
-				{command: "echo", args: ["[artifact] payment-service:{{ .Env.NITRO_BUILD_NUMBER }} pushed to {{ .Env.ECR_URL }}"]},
-			]
+			promote: {
+				type: "script"
+				steps: [
+					{command: "echo", args: ["[promote] re-tagging payment-service from {{ .Env.NITRO_ENV }}"]},
+				]
+			}
 			repository: {
 				type:  "registry"
 				url:   "{{ .Env.ECR_URL }}"
@@ -147,49 +116,40 @@ config: pipelines.#PipelineFile & {
 		"mycli": {
 			type:    "binary"
 			workdir: "./tools/mycli"
-			platforms: ["linux/amd64", "linux/arm64"]
-			preRun: [
-				{command: "echo", args: ["[artifact] Setting up Go build for mycli"]},
-			]
+			platforms: ["linux/amd64"]
 			build: [
-				{command: "echo", args: ["[build] go generate ./..."]},
-				{command: "echo", args: ["[build] go test ./..."]},
-				{command: "echo", args: ["[build] CGO_ENABLED=0 go build -o bin/mycli ./cmd/mycli"]},
+				{command: "go", args: ["build", "-ldflags", "-X main.version={{ .Env.BUILD_VERSION }}", "-o", "bin/mycli", "."], env: {CGO_ENABLED: "0"}},
 			]
-			postRun: [
-				{command: "echo", args: ["[artifact] mycli binary ready at /artifacts/bin"]},
-			]
+			deploy: {
+				type:        "filesystem"
+				source:      "bin/mycli"
+				destination: "/tmp/nitro-artifacts/bin/"
+			}
 			repository: {
 				type: "filesystem"
-				path: "/artifacts/bin"
+				path: "/tmp/nitro-artifacts/bin"
 			}
 		}
 
 		"shared-utils": {
 			type:     "package"
 			workdir:  "./libs/shared-utils"
-			language: "go"
-			preRun: [
-				{command: "echo", args: ["[artifact] Preparing shared-utils package"]},
-			]
+			language: "node"
 			build: [
-				{command: "echo", args: ["[build] go test ./..."]},
-				{command: "echo", args: ["[build] go build ./..."]},
+				{command: "node", args: ["test.js"]},
 			]
-			postRun: [
-				{command: "echo", args: ["[artifact] shared-utils published to Go proxy"]},
-			]
+			deploy: {
+				type:        "filesystem"
+				source:      "."
+				destination: "/tmp/nitro-artifacts/packages/shared-utils/"
+			}
 			repository: {
 				type: "package"
-				kind: "go"
-				url:  "https://proxy.golang.org"
+				kind: "npm"
+				url:  "https://registry.npmjs.org"
 			}
 		}
 	}
-
-	// ============================================================
-	// ENVIRONMENTS
-	// ============================================================
 
 	environments: {
 		"build": {
@@ -203,21 +163,12 @@ config: pipelines.#PipelineFile & {
 				preRun: [
 					{command: "echo", args: ["[env] Starting {{ .Env.NITRO_ENV }} build phase"]},
 				]
-				postRun: [
-					{command: "echo", args: ["[env] {{ .Env.NITRO_ENV }} build phase completed"]},
-				]
 			}
 			deploy: {
 				type:      "helm"
 				chart:     "myorg/api-gateway"
 				repo:      "https://charts.myorg.io"
 				namespace: "dev"
-				preRun: [
-					{command: "echo", args: ["[deploy] Preparing {{ .Env.NITRO_ENV }} deployment"]},
-				]
-				postRun: [
-					{command: "echo", args: ["[deploy] {{ .Env.NITRO_ENV }} deployment completed"]},
-				]
 				values: {
 					replicaCount: 1
 					ingress: enabled: false
@@ -234,12 +185,6 @@ config: pipelines.#PipelineFile & {
 				chart:     "myorg/api-gateway"
 				repo:      "https://charts.myorg.io"
 				namespace: "uat"
-				preRun: [
-					{command: "echo", args: ["[deploy] Preparing {{ .Env.NITRO_ENV }} deployment"]},
-				]
-				postRun: [
-					{command: "echo", args: ["[deploy] {{ .Env.NITRO_ENV }} deployment completed"]},
-				]
 				values: {
 					replicaCount: 2
 					ingress: enabled: true
@@ -251,7 +196,7 @@ config: pipelines.#PipelineFile & {
 		"prod": {
 			strategy:     "promote"
 			promotesFrom: "uat"
-			artifacts:    ["api-gateway", "payment-service"]
+			artifacts: ["api-gateway", "payment-service"]
 			deploy: {
 				type:      "helm"
 				chart:     "myorg/api-gateway"
@@ -259,10 +204,6 @@ config: pipelines.#PipelineFile & {
 				namespace: "production"
 				preRun: [
 					{command: "echo", args: ["[deploy] WARNING: Deploying to {{ .Env.NITRO_ENV }}!"]},
-				]
-				postRun: [
-					{command: "echo", args: ["[deploy] {{ .Env.NITRO_ENV }} deployment completed"]},
-					{command: "echo", args: ["[deploy] Running post-deploy health checks for {{ .Env.NITRO_ENV }}"]},
 				]
 				values: {
 					replicaCount: 5

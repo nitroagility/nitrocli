@@ -146,7 +146,6 @@ func newConfigListCmd() *cobra.Command {
 	}
 }
 
-// maskValue fully masks a secret value.
 func maskValue(_ string) string {
 	return "********"
 }

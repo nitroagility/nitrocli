@@ -122,7 +122,15 @@ func (v *Variable) AppliesToEnv(envName string) bool {
 	return false
 }
 
-// Artifact represents a buildable unit (docker image, binary, package).
+// Artifact represents a buildable and deployable unit (docker image, binary, package).
+//
+// Build strategy lifecycle:
+//
+//	preRun → preBuild → build → postBuild → preDeploy → deploy → postDeploy → postRun
+//
+// Promote strategy lifecycle:
+//
+//	preRun → preDeploy → promote → postDeploy → postRun
 type Artifact struct {
 	Type       string            `json:"type"`
 	Workdir    string            `json:"workdir,omitempty"`
@@ -131,9 +139,15 @@ type Artifact struct {
 	BuildArgs  map[string]string `json:"buildArgs,omitempty"`
 	Language   string            `json:"language,omitempty"`
 	Build      []BuildStep       `json:"build,omitempty"`
-	PreRun     []BuildStep       `json:"preRun,omitempty"`
-	PostRun    []BuildStep       `json:"postRun,omitempty"`
+	Deploy     *Deploy           `json:"deploy,omitempty"`
+	Promote    *Deploy           `json:"promote,omitempty"`
 	Repository Repository        `json:"repository"`
+	PreRun     []BuildStep       `json:"preRun,omitempty"`
+	PreBuild   []BuildStep       `json:"preBuild,omitempty"`
+	PostBuild  []BuildStep       `json:"postBuild,omitempty"`
+	PreDeploy  []BuildStep       `json:"preDeploy,omitempty"`
+	PostDeploy []BuildStep       `json:"postDeploy,omitempty"`
+	PostRun    []BuildStep       `json:"postRun,omitempty"`
 }
 
 // EffectiveWorkdir returns the working directory, defaulting to ".".
@@ -216,13 +230,18 @@ type BuildPhase struct {
 }
 
 // Deploy holds deployment configuration with pre/post hooks.
+// Supported types: "helm", "script", "filesystem".
+// Used by both environments (infra deploy) and artifacts (publish/push).
 type Deploy struct {
-	Type       string         `json:"type"`
-	Chart      string         `json:"chart,omitempty"`
-	Repo       string         `json:"repo,omitempty"`
-	Namespace  string         `json:"namespace"`
-	Parameters string         `json:"parameters,omitempty"`
-	Values     map[string]any `json:"values,omitempty"`
-	PreRun     []BuildStep    `json:"preRun,omitempty"`
-	PostRun    []BuildStep    `json:"postRun,omitempty"`
+	Type        string         `json:"type"`
+	Chart       string         `json:"chart,omitempty"`
+	Repo        string         `json:"repo,omitempty"`
+	Namespace   string         `json:"namespace,omitempty"`
+	Parameters  string         `json:"parameters,omitempty"`
+	Values      map[string]any `json:"values,omitempty"`
+	Steps       []BuildStep    `json:"steps,omitempty"`
+	Source      string         `json:"source,omitempty"`
+	Destination string         `json:"destination,omitempty"`
+	PreRun      []BuildStep    `json:"preRun,omitempty"`
+	PostRun     []BuildStep    `json:"postRun,omitempty"`
 }

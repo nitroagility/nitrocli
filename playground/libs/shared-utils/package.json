@@ -1,0 +1,11 @@
+{
+  "name": "@myorg/shared-utils",
+  "version": "1.0.0",
+  "description": "Shared utility functions",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test.js",
+    "build": "echo 'build ok'"
+  },
+  "license": "MIT"
+}

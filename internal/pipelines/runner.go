@@ -13,6 +13,7 @@ import (
 type Runner struct {
 	Config   *Config
 	DryRun   bool
+	Unsafe   bool
 	Workdir  string
 	envName  string
 	Commands *CommandBuilder
@@ -26,6 +27,7 @@ type RunOptions struct {
 	Build       bool
 	Deploy      bool
 	BuildNumber string
+	Unsafe      bool // disables path traversal protection for workdir
 }
 
 // NewRunner creates a fully wired Runner for the given config and mode.
@@ -52,8 +54,95 @@ func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 	}
 }
 
-// Run executes the pipeline for the specified environment.
+// RunAll executes the pipeline for multiple environments in dependency order.
+// Environments are topologically sorted based on promotesFrom relationships
+// between the requested environments. Disconnected environments run in any order.
+func (r *Runner) RunAll(ctx context.Context, envNames []string, opts RunOptions) error {
+	sorted, err := r.topoSortEnvs(envNames)
+	if err != nil {
+		return err
+	}
+
+	for _, envName := range sorted {
+		if err := r.Run(ctx, envName, opts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// topoSortEnvs returns the environments in dependency order (promotesFrom first).
+// Only considers edges between the requested environments.
+func (r *Runner) topoSortEnvs(envNames []string) ([]string, error) {
+	if len(envNames) <= 1 {
+		return envNames, nil
+	}
+
+	// Validate all environments exist.
+	requested := make(map[string]bool, len(envNames))
+	for _, name := range envNames {
+		if _, ok := r.Config.Environments[name]; !ok {
+			return nil, &PipelineError{
+				Phase:   "run",
+				Summary: fmt.Sprintf("Environment %q not found", name),
+				Details: []string{fmt.Sprintf("available environments: %s", strings.Join(r.Config.EnvironmentNames(), ", "))},
+				Hint:    "check the --env flag value",
+			}
+		}
+		requested[name] = true
+	}
+
+	// Build in-degree map and adjacency list (only edges within requested set).
+	inDegree := make(map[string]int, len(envNames))
+	dependents := make(map[string][]string)
+	for _, name := range envNames {
+		inDegree[name] = 0
+	}
+	for _, name := range envNames {
+		env := r.Config.Environments[name]
+		if env.PromotesFrom != "" && requested[env.PromotesFrom] {
+			inDegree[name]++
+			dependents[env.PromotesFrom] = append(dependents[env.PromotesFrom], name)
+		}
+	}
+
+	// Kahn's algorithm.
+	var queue []string
+	for _, name := range envNames {
+		if inDegree[name] == 0 {
+			queue = append(queue, name)
+		}
+	}
+
+	var sorted []string
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		sorted = append(sorted, node)
+		for _, dep := range dependents[node] {
+			inDegree[dep]--
+			if inDegree[dep] == 0 {
+				queue = append(queue, dep)
+			}
+		}
+	}
+
+	if len(sorted) != len(envNames) {
+		return nil, &PipelineError{
+			Phase:   "run",
+			Summary: "Circular dependency between requested environments",
+			Details: []string{fmt.Sprintf("requested: %s", strings.Join(envNames, ", "))},
+			Hint:    "check the promotesFrom chain for cycles",
+		}
+	}
+
+	return sorted, nil
+}
+
+// Run executes the pipeline for a single environment.
 func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error {
+	r.Unsafe = opts.Unsafe
+
 	env, ok := r.Config.Environments[envName]
 	if !ok {
 		return &PipelineError{
@@ -102,10 +191,15 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 
 // resolveWorkdir joins the base workdir with the artifact's workdir.
 // The artifact workdir is template-evaluated to support {{ .Env.XXX }} references.
-// Returns an error if the resolved path escapes the base workdir (path traversal).
+// Returns an error if the resolved path escapes the base workdir (path traversal),
+// unless --unsafe is set.
 func (r *Runner) resolveWorkdir(art *Artifact) (string, error) {
 	artWorkdir := r.Executor.EvalString(art.EffectiveWorkdir())
 	resolved := filepath.Join(r.Workdir, artWorkdir)
+
+	if r.Unsafe {
+		return resolved, nil
+	}
 
 	absResolved, err := filepath.Abs(resolved)
 	if err != nil {
@@ -116,8 +210,8 @@ func (r *Runner) resolveWorkdir(art *Artifact) (string, error) {
 		return "", fmt.Errorf("cannot resolve base workdir: %w", err)
 	}
 
-	if !strings.HasPrefix(absResolved, absBase) {
-		return "", fmt.Errorf("workdir %q escapes base directory %q — path traversal blocked", artWorkdir, r.Workdir)
+	if !strings.HasPrefix(absResolved+string(filepath.Separator), absBase+string(filepath.Separator)) {
+		return "", fmt.Errorf("workdir %q escapes base directory %q — use --unsafe to allow this", artWorkdir, r.Workdir)
 	}
 
 	return resolved, nil
@@ -219,36 +313,72 @@ func (r *Runner) processArtifacts(ctx context.Context, env *Environment, opts Ru
 	return nil
 }
 
+// runArtifact executes the artifact lifecycle.
+//
+// Build strategy (full lifecycle):
+//
+//	preRun → preBuild → build → postBuild → preDeploy → deploy → postDeploy → postRun
+//
+// Promote strategy (skip build, run deploy):
+//
+//	preRun → preDeploy → deploy → postDeploy → postRun
 func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, env *Environment, opts RunOptions) error {
-	r.Log.Step(fmt.Sprintf("%s (%s)", name, art.Type))
+	strategy := "build"
+	if env.IsPromote() {
+		strategy = "promote"
+	}
+	r.Log.Step(fmt.Sprintf("%s (%s) [%s]", name, art.Type, strategy))
 
 	workdir, err := r.resolveWorkdir(art)
 	if err != nil {
 		return err
 	}
+	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
 
-	// Artifact preRun.
-	if err := r.runHooks(ctx, r.envName, fmt.Sprintf("%s pre-run", name), art.PreRun); err != nil {
+	// 1. preRun
+	if err := r.runHooks(ctx, r.envName, name+" pre-run", art.PreRun); err != nil {
 		return err
 	}
 
-	switch {
-	case art.IsDocker():
-		err = r.runDocker(ctx, art, env, opts, workdir)
-	case art.IsBinary():
-		err = r.runBinaryBuild(ctx, art, workdir)
-	case art.IsPackage():
-		err = r.runPackage(ctx, art, workdir)
-	default:
-		r.Log.Info(fmt.Sprintf("unknown artifact type: %s", art.Type))
+	// 2–4. Build phase (skipped for promote).
+	if env.IsBuild() {
+		if err := r.runHooks(ctx, r.envName, name+" pre-build", art.PreBuild); err != nil {
+			return err
+		}
+		if err := r.runBuild(ctx, art, opts, workdir); err != nil {
+			return err
+		}
+		if err := r.runHooks(ctx, r.envName, name+" post-build", art.PostBuild); err != nil {
+			return err
+		}
+	} else {
+		r.Log.Promote(fmt.Sprintf("promoting %s from %s (build skipped)", name, env.PromotesFrom))
 	}
 
-	if err != nil {
+	// 5. preDeploy
+	if err := r.runHooks(ctx, r.envName, name+" pre-deploy", art.PreDeploy); err != nil {
 		return err
 	}
 
-	// Artifact postRun.
-	if err := r.runHooks(ctx, r.envName, fmt.Sprintf("%s post-run", name), art.PostRun); err != nil {
+	// 6. deploy (build) or promote (promote) — each has its own preRun/postRun
+	if env.IsBuild() && art.Deploy != nil {
+		if err := r.runDeploy(ctx, name, art.Deploy, workdir); err != nil {
+			return err
+		}
+	}
+	if env.IsPromote() && art.Promote != nil {
+		if err := r.runDeploy(ctx, name, art.Promote, workdir); err != nil {
+			return err
+		}
+	}
+
+	// 7. postDeploy
+	if err := r.runHooks(ctx, r.envName, name+" post-deploy", art.PostDeploy); err != nil {
+		return err
+	}
+
+	// 8. postRun
+	if err := r.runHooks(ctx, r.envName, name+" post-run", art.PostRun); err != nil {
 		return err
 	}
 
@@ -256,89 +386,82 @@ func (r *Runner) runArtifact(ctx context.Context, name string, art *Artifact, en
 	return nil
 }
 
-func (r *Runner) runDocker(ctx context.Context, art *Artifact, env *Environment, opts RunOptions, workdir string) error {
-	if env.IsPromote() {
-		r.Log.Promote(fmt.Sprintf("promoting %s from %s", art.Repository.FullImage(), env.PromotesFrom))
+func (r *Runner) runBuild(ctx context.Context, art *Artifact, opts RunOptions, workdir string) error {
+	switch {
+	case art.IsDocker():
+		args := r.Commands.DockerBuild(art, opts.BuildNumber)
+		return r.Executor.Run(ctx, args, workdir)
+	case art.IsBinary(), art.IsPackage():
+		return r.runBuildSteps(ctx, art, workdir)
+	default:
+		r.Log.Info(fmt.Sprintf("unknown artifact type: %s", art.Type))
 		return nil
 	}
-
-	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
-
-	args := r.Commands.DockerBuild(art, opts.BuildNumber)
-	return r.Executor.Run(ctx, args, workdir)
 }
 
-func (r *Runner) runBinaryBuild(ctx context.Context, art *Artifact, workdir string) error {
-	r.Log.Info(fmt.Sprintf("workdir: %s", workdir))
-
+func (r *Runner) runBuildSteps(ctx context.Context, art *Artifact, workdir string) error {
 	steps := filterSteps(art.Build, r.envName)
 	for i, s := range steps {
 		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
-		args := r.Commands.BuildStepCommand(&s)
-		if err := r.Executor.Run(ctx, args, workdir); err != nil {
+		if err := r.Executor.Run(ctx, r.Commands.BuildStepCommand(&s), workdir); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	if art.Repository.Type == "filesystem" {
-		r.Log.Info(fmt.Sprintf("output: %s", art.Repository.Path))
+// ── Deploy ──────────────────────────────────────────
+
+// runDeploy executes a deploy (helm, script). Used by both artifacts and environments.
+func (r *Runner) runDeploy(ctx context.Context, label string, d *Deploy, workdir string) error {
+	if err := r.runHooks(ctx, r.envName, label+" deploy pre-run", d.PreRun); err != nil {
+		return err
+	}
+
+	r.Log.Step(fmt.Sprintf("deploy --> %s (%s)", label, d.Type))
+
+	var err error
+	switch d.Type {
+	case "helm":
+		args := r.Commands.HelmDeploy(label, d)
+		err = r.Executor.Run(ctx, args, workdir)
+	case "script":
+		steps := filterSteps(d.Steps, r.envName)
+		for i, s := range steps {
+			r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
+			if err := r.Executor.Run(ctx, r.Commands.BuildStepCommand(&s), workdir); err != nil {
+				return err
+			}
+		}
+	case "filesystem":
+		src := r.Executor.EvalString(d.Source)
+		dst := r.Executor.EvalString(d.Destination)
+		r.Log.Info(fmt.Sprintf("  copy %s → %s", src, dst))
+		copyArgs := []string{"cp", "-r", src, dst}
+		err = r.Executor.Run(ctx, copyArgs, workdir)
+	default:
+		r.Log.Info(fmt.Sprintf("unknown deploy type: %s", d.Type))
+	}
+
+	if err != nil {
+		return err
+	}
+
+	r.Log.Separator()
+
+	if err := r.runHooks(ctx, r.envName, label+" deploy post-run", d.PostRun); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (r *Runner) runPackage(ctx context.Context, art *Artifact, workdir string) error {
-	r.Log.Info(fmt.Sprintf("workdir: %s | language: %s", workdir, art.Language))
-
-	steps := filterSteps(art.Build, r.envName)
-	for i, s := range steps {
-		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
-		args := r.Commands.BuildStepCommand(&s)
-		if err := r.Executor.Run(ctx, args, workdir); err != nil {
-			return err
-		}
-	}
-
-	r.Log.Promote(fmt.Sprintf("publish to %s (%s)", art.Repository.URL, art.Repository.Kind))
-	return nil
-}
-
-// ── Deploy Phase ─────────────────────────────────────
-
+// runDeployPhase runs the environment-level deploy.
 func (r *Runner) runDeployPhase(ctx context.Context, envName string, env *Environment) error {
 	if env.Deploy == nil {
 		return nil
 	}
-
-	// Deploy preRun.
-	if err := r.runHooks(ctx, r.envName, "Deploy pre-run", env.Deploy.PreRun); err != nil {
-		return err
-	}
-
-	// Deploy.
-	r.Log.Step(fmt.Sprintf("deploy --> %s", envName))
-
-	var err error
-	switch env.Deploy.Type {
-	case "helm":
-		args := r.Commands.HelmDeploy(envName, env.Deploy)
-		err = r.Executor.Run(ctx, args, r.Workdir)
-	default:
-		r.Log.Info(fmt.Sprintf("deploy type: %s", env.Deploy.Type))
-	}
-
-	if err != nil {
-		return err
-	}
-
-	r.Log.Separator()
-
-	// Deploy postRun.
-	if err := r.runHooks(ctx, r.envName, "Deploy post-run", env.Deploy.PostRun); err != nil {
-		return err
-	}
-
-	return nil
+	return r.runDeploy(ctx, envName, env.Deploy, r.Workdir)
 }
 
 // ── Hooks ────────────────────────────────────────────

@@ -353,14 +353,29 @@ func validate(cfg *Config) []string {
 		}
 
 		if env.Deploy != nil {
-			validDeployTypes := map[string]bool{"helm": true}
-			if !validDeployTypes[env.Deploy.Type] {
-				errs = append(errs, fmt.Sprintf(
-					"environment %q: unknown deploy type %q (supported: helm)",
-					name, env.Deploy.Type,
-				))
-			}
+			errs = append(errs, validateDeploy(fmt.Sprintf("environment %q", name), env.Deploy)...)
 		}
+	}
+
+	// Artifact deploy/promote validation.
+	for name, art := range cfg.Artifacts {
+		if art.Deploy != nil {
+			errs = append(errs, validateDeploy(fmt.Sprintf("artifact %q deploy", name), art.Deploy)...)
+		}
+		if art.Promote != nil {
+			errs = append(errs, validateDeploy(fmt.Sprintf("artifact %q promote", name), art.Promote)...)
+		}
+	}
+
+	// Cycle detection on promotesFrom chain.
+	envGraph := make(map[string][]string, len(cfg.Environments))
+	for name, env := range cfg.Environments {
+		if env.PromotesFrom != "" {
+			envGraph[name] = []string{env.PromotesFrom}
+		}
+	}
+	if cycle := detectCycle(envGraph); cycle != "" {
+		errs = append(errs, fmt.Sprintf("circular promotesFrom detected: %s", cycle))
 	}
 
 	// Provider checks.
@@ -404,7 +419,14 @@ func validate(cfg *Config) []string {
 				))
 			}
 
-			// Effective envs = intersection of provider envs and variable envs.
+			// Validate variable envs are a subset of provider envs.
+			if orphan := envsOutsideProvider(p.Envs, v.Envs); orphan != "" {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: variable %q declares envs [%s] but provider only covers [%s] — %q will never be loaded",
+					name, v.Name, strings.Join(v.Envs, ", "), strings.Join(p.Envs, ", "), orphan,
+				))
+			}
+
 			effectiveEnvs := effectiveVarEnvs(p.Envs, v.Envs)
 			varEnvMap[v.Name] = append(varEnvMap[v.Name], varScope{provider: name, envs: effectiveEnvs})
 		}
@@ -436,6 +458,13 @@ func validate(cfg *Config) []string {
 				errs = append(errs, fmt.Sprintf(
 					"provider %q: transformer %q is a secret and must not have a default value",
 					name, t.Name,
+				))
+			}
+
+			if orphan := envsOutsideProvider(p.Envs, t.Envs); orphan != "" {
+				errs = append(errs, fmt.Sprintf(
+					"provider %q: transformer %q declares envs [%s] but provider only covers [%s] — %q will never be loaded",
+					name, t.Name, strings.Join(t.Envs, ", "), strings.Join(p.Envs, ", "), orphan,
 				))
 			}
 
@@ -476,6 +505,27 @@ func validate(cfg *Config) []string {
 	return errs
 }
 
+var validDeployTypes = map[string]bool{"helm": true, "script": true, "filesystem": true}
+
+func validateDeploy(context string, d *Deploy) []string {
+	var errs []string
+	if !validDeployTypes[d.Type] {
+		errs = append(errs, fmt.Sprintf("%s: unknown deploy type %q (supported: helm, script, filesystem)", context, d.Type))
+	}
+	if d.Type == "script" && len(d.Steps) == 0 {
+		errs = append(errs, fmt.Sprintf("%s: deploy type \"script\" requires at least one step", context))
+	}
+	if d.Type == "filesystem" {
+		if d.Source == "" {
+			errs = append(errs, fmt.Sprintf("%s: deploy type \"filesystem\" requires source", context))
+		}
+		if d.Destination == "" {
+			errs = append(errs, fmt.Sprintf("%s: deploy type \"filesystem\" requires destination", context))
+		}
+	}
+	return errs
+}
+
 // detectCycle performs DFS cycle detection on a transformer dependency graph.
 // Returns a description of the cycle if found, or "" if no cycle exists.
 func detectCycle(graph map[string][]string) string {
@@ -513,6 +563,24 @@ func detectCycle(graph map[string][]string) string {
 	for name := range graph {
 		if cycle := dfs(name, nil); cycle != "" {
 			return cycle
+		}
+	}
+	return ""
+}
+
+// envsOutsideProvider returns the first variable env that is not covered by the provider.
+// If provider envs is empty (all), or variable envs is empty (inherit), returns "".
+func envsOutsideProvider(providerEnvs, varEnvs []string) string {
+	if len(providerEnvs) == 0 || len(varEnvs) == 0 {
+		return ""
+	}
+	pSet := make(map[string]bool, len(providerEnvs))
+	for _, e := range providerEnvs {
+		pSet[e] = true
+	}
+	for _, e := range varEnvs {
+		if !pSet[e] {
+			return e
 		}
 	}
 	return ""
