@@ -9,11 +9,11 @@ config: pipelines.#PipelineFile & {
 	// ============================================================
 
 	preRun: [
-		{command: "echo", args: ["Pipeline started"]},
+		{command: "echo", args: ["[global] Pipeline started for {{ .Env.NITRO_ENV }} environment"]},
 	]
 
 	postRun: [
-		{command: "echo", args: ["Pipeline finished"]},
+		{command: "echo", args: ["[global] Pipeline finished for {{ .Env.NITRO_ENV }} environment"]},
 	]
 
 	// ============================================================
@@ -60,11 +60,11 @@ config: pipelines.#PipelineFile & {
 				GITHUB_TOKEN:  "{{ .Env.GITHUB_TOKEN }}"
 			}
 			preRun: [
-				{command: "bash", args: ["-c", "aws ecr get-login-password --region eu-central-1 --profile {{ .Env.AWS_PROFILE }} | docker login --username AWS --password-stdin {{ .Env.ECR_URL }}"]},
-				{command: "bash", args: ["-c", "aws ecr describe-repositories --repository-names api-gateway --region eu-central-1 --profile {{ .Env.AWS_PROFILE }} 2>/dev/null || aws ecr create-repository --repository-name api-gateway --region eu-central-1 --profile {{ .Env.AWS_PROFILE }}"]},
+				{command: "echo", args: ["[artifact] ECR login for api-gateway on {{ .Env.ECR_URL }}"]},
+				{command: "echo", args: ["[artifact] Ensuring ECR repo api-gateway exists"]},
 			]
 			postRun: [
-				{command: "echo", args: ["api-gateway image pushed successfully"]},
+				{command: "echo", args: ["[artifact] api-gateway:{{ .Env.NITRO_BUILD_NUMBER }} pushed to {{ .Env.ECR_URL }}"]},
 			]
 			repository: {
 				type:  "registry"
@@ -82,7 +82,10 @@ config: pipelines.#PipelineFile & {
 				BUILD_VERSION: "{{ .Env.BUILD_VERSION }}"
 			}
 			preRun: [
-				{command: "bash", args: ["-c", "aws ecr describe-repositories --repository-names payment-service --region eu-central-1 --profile {{ .Env.AWS_PROFILE }} 2>/dev/null || aws ecr create-repository --repository-name payment-service --region eu-central-1 --profile {{ .Env.AWS_PROFILE }}"]},
+				{command: "echo", args: ["[artifact] Ensuring ECR repo payment-service exists"]},
+			]
+			postRun: [
+				{command: "echo", args: ["[artifact] payment-service:{{ .Env.NITRO_BUILD_NUMBER }} pushed to {{ .Env.ECR_URL }}"]},
 			]
 			repository: {
 				type:  "registry"
@@ -95,14 +98,16 @@ config: pipelines.#PipelineFile & {
 			type:    "binary"
 			workdir: "./tools/mycli"
 			platforms: ["linux/amd64", "linux/arm64"]
+			preRun: [
+				{command: "echo", args: ["[artifact] Setting up Go build for mycli"]},
+			]
 			build: [
-				{command: "go", args: ["generate", "./..."]},
-				{command: "go", args: ["test", "./..."]},
-				{
-					command: "go"
-					args: ["build", "-ldflags", "-s -w", "-o", "bin/mycli", "./cmd/mycli"]
-					env: {CGO_ENABLED: "0", GOOS: "linux"}
-				},
+				{command: "echo", args: ["[build] go generate ./..."]},
+				{command: "echo", args: ["[build] go test ./..."]},
+				{command: "echo", args: ["[build] CGO_ENABLED=0 go build -o bin/mycli ./cmd/mycli"]},
+			]
+			postRun: [
+				{command: "echo", args: ["[artifact] mycli binary ready at /artifacts/bin"]},
 			]
 			repository: {
 				type: "filesystem"
@@ -114,9 +119,15 @@ config: pipelines.#PipelineFile & {
 			type:     "package"
 			workdir:  "./libs/shared-utils"
 			language: "go"
+			preRun: [
+				{command: "echo", args: ["[artifact] Preparing shared-utils package"]},
+			]
 			build: [
-				{command: "go", args: ["test", "./..."]},
-				{command: "go", args: ["build", "./..."]},
+				{command: "echo", args: ["[build] go test ./..."]},
+				{command: "echo", args: ["[build] go build ./..."]},
+			]
+			postRun: [
+				{command: "echo", args: ["[artifact] shared-utils published to Go proxy"]},
 			]
 			repository: {
 				type: "package"
@@ -140,23 +151,22 @@ config: pipelines.#PipelineFile & {
 			promotesFrom: "build"
 			build: {
 				preRun: [
-					{command: "echo", args: ["Starting dev build phase..."]},
+					{command: "echo", args: ["[env] Starting {{ .Env.NITRO_ENV }} build phase"]},
 				]
 				postRun: [
-					{command: "echo", args: ["Dev build phase completed"]},
+					{command: "echo", args: ["[env] {{ .Env.NITRO_ENV }} build phase completed"]},
 				]
 			}
 			deploy: {
-				type:       "helm"
-				chart:      "myorg/api-gateway"
-				repo:       "https://charts.myorg.io"
-				namespace:  "dev"
-				parameters: "--set image.tag={{ .Env.NITRO_BUILD_NUMBER }}"
+				type:      "helm"
+				chart:     "myorg/api-gateway"
+				repo:      "https://charts.myorg.io"
+				namespace: "dev"
 				preRun: [
-					{command: "echo", args: ["Preparing dev deployment..."]},
+					{command: "echo", args: ["[deploy] Preparing {{ .Env.NITRO_ENV }} deployment"]},
 				]
 				postRun: [
-					{command: "echo", args: ["Dev deployment completed"]},
+					{command: "echo", args: ["[deploy] {{ .Env.NITRO_ENV }} deployment completed"]},
 				]
 				values: {
 					replicaCount: 1
@@ -170,13 +180,15 @@ config: pipelines.#PipelineFile & {
 			strategy:     "promote"
 			promotesFrom: "dev"
 			deploy: {
-				type:       "helm"
-				chart:      "myorg/api-gateway"
-				repo:       "https://charts.myorg.io"
-				namespace:  "uat"
-				parameters: "--set image.tag={{ .Env.NITRO_BUILD_NUMBER }}"
+				type:      "helm"
+				chart:     "myorg/api-gateway"
+				repo:      "https://charts.myorg.io"
+				namespace: "uat"
 				preRun: [
-					{command: "echo", args: ["Preparing UAT deployment..."]},
+					{command: "echo", args: ["[deploy] Preparing {{ .Env.NITRO_ENV }} deployment"]},
+				]
+				postRun: [
+					{command: "echo", args: ["[deploy] {{ .Env.NITRO_ENV }} deployment completed"]},
 				]
 				values: {
 					replicaCount: 2
@@ -191,17 +203,16 @@ config: pipelines.#PipelineFile & {
 			promotesFrom: "uat"
 			artifacts:    ["api-gateway", "payment-service"]
 			deploy: {
-				type:       "helm"
-				chart:      "myorg/api-gateway"
-				repo:       "https://charts.myorg.io"
-				namespace:  "production"
-				parameters: "--set image.tag={{ .Env.NITRO_BUILD_NUMBER }}"
+				type:      "helm"
+				chart:     "myorg/api-gateway"
+				repo:      "https://charts.myorg.io"
+				namespace: "production"
 				preRun: [
-					{command: "echo", args: ["WARNING: Deploying to production!"]},
+					{command: "echo", args: ["[deploy] WARNING: Deploying to {{ .Env.NITRO_ENV }}!"]},
 				]
 				postRun: [
-					{command: "echo", args: ["Production deployment completed"]},
-					{command: "echo", args: ["Running post-deploy health checks..."]},
+					{command: "echo", args: ["[deploy] {{ .Env.NITRO_ENV }} deployment completed"]},
+					{command: "echo", args: ["[deploy] Running post-deploy health checks for {{ .Env.NITRO_ENV }}"]},
 				]
 				values: {
 					replicaCount: 5
