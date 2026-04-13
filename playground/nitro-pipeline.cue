@@ -8,6 +8,11 @@ config: pipelines.#PipelineFile & {
 		"GITHUB_TOKEN",
 		"DOCKER_PASSWORD",
 		"BWS_ACCESS_TOKEN",
+		// AWS deploy creds used to authenticate against Secrets Manager (see
+		// aws-secrets.credentialsFromVars below). Stored in ~/.nitro/config.json
+		// so they're available before any provider runs.
+		"AWS_DEPLOY_ACCESS_KEY_ID",
+		"AWS_DEPLOY_SECRET_ACCESS_KEY",
 	]
 
 	preRun: [
@@ -40,6 +45,16 @@ config: pipelines.#PipelineFile & {
 			priority: 2
 			region:   "eu-central-1"
 			envs:     ["prod"]
+			// Per-env static credentials for GetSecretValue. Each entry points at
+			// already-resolved variables (globals or higher-priority provider).
+			// When no entry matches the current env, the SDK default chain is used
+			// (env → ~/.aws/credentials → IMDS) — handy for CodeBuild with IAM role.
+			credentialsFromVars: {
+				prod: {
+					accessKeyID:     "AWS_DEPLOY_ACCESS_KEY_ID"
+					secretAccessKey: "AWS_DEPLOY_SECRET_ACCESS_KEY"
+				}
+			}
 			variables: [
 				{name: "DB_CONNECTION_STRING", path: "prod/database/connection", secret: true},
 				{name: "DB_USERNAME", path: "prod/database/credentials", key: "username", secret: true},
