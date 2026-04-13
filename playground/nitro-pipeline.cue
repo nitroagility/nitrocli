@@ -8,11 +8,9 @@ config: pipelines.#PipelineFile & {
 		"GITHUB_TOKEN",
 		"DOCKER_PASSWORD",
 		"BWS_ACCESS_TOKEN",
-		// AWS deploy creds used to authenticate against Secrets Manager (see
-		// aws-secrets.credentialsFromVars below). Stored in ~/.nitro/config.json
-		// so they're available before any provider runs.
-		"AWS_DEPLOY_ACCESS_KEY_ID",
-		"AWS_DEPLOY_SECRET_ACCESS_KEY",
+		// AWS_DEPLOY_ACCESS_KEY_ID / AWS_DEPLOY_SECRET_ACCESS_KEY would go here
+		// to feed aws-secrets.credentialsFromVars (see provider below). Pending
+		// a nitrocli module tag that exposes that schema field.
 	]
 
 	preRun: [
