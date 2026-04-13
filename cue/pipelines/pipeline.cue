@@ -201,12 +201,13 @@ _#TemplateTransformer: {
 // ============================================================
 
 #HelmDeploy: {
-	type:        "helm"
-	chart:       string & =~".+"
-	repo?:       string
-	namespace:   string & =~".+"
-	parameters?: string
-	values?:     [string]: _
+	type:         "helm"
+	chart:        string & =~".+"
+	repo?:        string
+	releaseName?: string & =~".+" // defaults to the env name when unset
+	namespace:    string & =~".+"
+	parameters?:  string
+	values?:      [string]: _
 }
 
 #ScriptDeploy: {

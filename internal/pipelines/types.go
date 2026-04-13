@@ -247,6 +247,7 @@ type Deploy struct {
 	Type        string         `json:"type"`
 	Chart       string         `json:"chart,omitempty"`
 	Repo        string         `json:"repo,omitempty"`
+	ReleaseName string         `json:"releaseName,omitempty"` // helm only; defaults to envName
 	Namespace   string         `json:"namespace,omitempty"`
 	Parameters  string         `json:"parameters,omitempty"`
 	Values      map[string]any `json:"values,omitempty"`

@@ -44,7 +44,11 @@ func (b *CommandBuilder) BuildStepCommand(s *BuildStep) []string {
 // It is shell-split so each flag / value lands as its own argv entry, otherwise helm
 // would see the whole blob as a single argument and reject it with "unknown flag: ...".
 func (b *CommandBuilder) HelmDeploy(envName string, d *Deploy) []string {
-	args := []string{"helm", "upgrade", "--install", envName, d.Chart, "--namespace", d.Namespace}
+	releaseName := d.ReleaseName
+	if releaseName == "" {
+		releaseName = envName
+	}
+	args := []string{"helm", "upgrade", "--install", releaseName, d.Chart, "--namespace", d.Namespace}
 	if d.Repo != "" {
 		args = append(args, "--repo", d.Repo)
 	}
