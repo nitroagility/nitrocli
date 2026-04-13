@@ -45,16 +45,21 @@ config: pipelines.#PipelineFile & {
 			priority: 2
 			region:   "eu-central-1"
 			envs:     ["prod"]
+			// NOTE: requires nitrocli schema > v0.0.17 (this playground's cue.mod
+			// dep). Once a new tag is published, bump cue.mod/module.cue and
+			// uncomment below. Until then, the SDK default chain is used.
+			//
 			// Per-env static credentials for GetSecretValue. Each entry points at
 			// already-resolved variables (globals or higher-priority provider).
 			// When no entry matches the current env, the SDK default chain is used
 			// (env → ~/.aws/credentials → IMDS) — handy for CodeBuild with IAM role.
-			credentialsFromVars: {
-				prod: {
-					accessKeyID:     "AWS_DEPLOY_ACCESS_KEY_ID"
-					secretAccessKey: "AWS_DEPLOY_SECRET_ACCESS_KEY"
-				}
-			}
+			//
+			// credentialsFromVars: {
+			// 	prod: {
+			// 		accessKeyID:     "AWS_DEPLOY_ACCESS_KEY_ID"
+			// 		secretAccessKey: "AWS_DEPLOY_SECRET_ACCESS_KEY"
+			// 	}
+			// }
 			variables: [
 				{name: "DB_CONNECTION_STRING", path: "prod/database/connection", secret: true},
 				{name: "DB_USERNAME", path: "prod/database/credentials", key: "username", secret: true},
