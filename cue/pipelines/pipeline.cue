@@ -38,12 +38,33 @@ _#ConfigVariable: {
 	variables: [...#ProviderVariable]
 }
 
+// Optional per-env AWS credentials: names of ALREADY-RESOLVED variables to use
+// as the static credentials provider for GetSecretValue calls. Use this when the
+// SDK default chain (env → ~/.aws/credentials → IMDS) would fail — typically in
+// local runs where no profile is configured and the machine is not on EC2.
+//
+// Each referenced variable must be resolved BEFORE this provider runs — i.e. it
+// must come from globals or a provider with a higher `priority` number than this
+// provider.
+//
+// Credentials are keyed by environment name: if the provider runs for env "X"
+// and `credentialsFromVars` has a "X" entry, those variables are used; if no
+// entry exists for "X" (or credentialsFromVars is unset), the SDK default chain
+// is used. This lets different envs authenticate with different credentials
+// without duplicating provider definitions.
+_#AWSCredentialsRef: {
+	accessKeyID:     string & =~".+"
+	secretAccessKey: string & =~".+"
+	sessionToken?:   string
+}
+
 #AWSSecretsManagerProvider: {
-	type:      "aws-secretsmanager"
-	priority:  int & >=1
-	region:    string & =~".+"
-	envs:      [...string]
-	variables: [...#ProviderVariable]
+	type:                 "aws-secretsmanager"
+	priority:             int & >=1
+	region:               string & =~".+"
+	credentialsFromVars?: [envName=string]: _#AWSCredentialsRef
+	envs:                 [...string]
+	variables:            [...#ProviderVariable]
 }
 
 #BitwardenProvider: {

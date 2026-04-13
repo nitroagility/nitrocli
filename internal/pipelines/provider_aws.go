@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
@@ -18,14 +19,28 @@ type awsResolver struct {
 	mu     sync.Mutex
 }
 
+// awsStaticCreds holds credentials extracted from already-resolved variables.
+// When passed to newAWSResolver, they override the SDK default credentials chain.
+type awsStaticCreds struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string // optional, used for temporary credentials
+}
+
 // newAWSResolver creates an AWS Secrets Manager client for the given region.
-// Credentials are resolved via the standard AWS SDK chain:
+// If creds is non-nil, its values are used directly (static credentials provider).
+// Otherwise the SDK default chain is used:
 //
 //	env vars → shared config → IAM role → EC2 IMDS
-func newAWSResolver(ctx context.Context, region string) (*awsResolver, error) {
+func newAWSResolver(ctx context.Context, region string, creds *awsStaticCreds) (*awsResolver, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
 	if region != "" {
 		opts = append(opts, awsconfig.WithRegion(region))
+	}
+	if creds != nil {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken),
+		))
 	}
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)

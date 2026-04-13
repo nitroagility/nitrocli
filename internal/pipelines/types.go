@@ -31,13 +31,24 @@ func (c *Config) ArtifactNames() []string {
 
 // Provider represents an external secrets/config provider.
 type Provider struct {
-	Type         string        `json:"type"`
-	Priority     int           `json:"priority"`
-	URL          string        `json:"url,omitempty"`
-	Region       string        `json:"region,omitempty"`
-	Envs         []string      `json:"envs"`
-	Variables    []Variable    `json:"variables,omitempty"`
-	Transformers []Transformer `json:"transformers,omitempty"`
+	Type                string                        `json:"type"`
+	Priority            int                           `json:"priority"`
+	URL                 string                        `json:"url,omitempty"`
+	Region              string                        `json:"region,omitempty"`
+	CredentialsFromVars map[string]*AWSCredentialsRef `json:"credentialsFromVars,omitempty"`
+	Envs                []string                      `json:"envs"`
+	Variables           []Variable                    `json:"variables,omitempty"`
+	Transformers        []Transformer                 `json:"transformers,omitempty"`
+}
+
+// AWSCredentialsRef names already-resolved variables whose values should be used
+// as AWS credentials for the aws-secretsmanager provider (static credentials
+// provider). Looked up per-environment via Provider.CredentialsFromVars — when
+// no entry exists for the current env, the AWS SDK default chain is used.
+type AWSCredentialsRef struct {
+	AccessKeyID     string `json:"accessKeyID"`
+	SecretAccessKey string `json:"secretAccessKey"`
+	SessionToken    string `json:"sessionToken,omitempty"`
 }
 
 // Transformer derives a new variable by combining multiple resolved variables.

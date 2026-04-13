@@ -14,12 +14,16 @@ import (
 )
 
 // ProviderResolver resolves secrets from configured providers for a given environment.
+//
+// awsResolvers is keyed by (region + access key) so envs using different credential
+// sets each get their own SDK client + secret-value cache. When a provider uses the
+// SDK default chain (no credentialsFromVars), the key has an empty access key part.
 type ProviderResolver struct {
-	Log         *Logger
-	Masker      *Masker
-	Globals     map[string]bool // allowlist: only these variables can be resolved from ~/.nitro/config.json
-	awsResolver *awsResolver
-	bwResolver  *bitwardenResolver
+	Log          *Logger
+	Masker       *Masker
+	Globals      map[string]bool // allowlist: only these variables can be resolved from ~/.nitro/config.json
+	awsResolvers map[string]*awsResolver
+	bwResolver   *bitwardenResolver
 }
 
 // Resolve collects all variables from providers that apply to the given environment.
@@ -30,7 +34,12 @@ type ProviderResolver struct {
 //  3. Priority 1 = maximum priority (loaded last, overwrites everything)
 //
 // Each layer overwrites previous values. Secret values are registered in the Masker.
-func (r *ProviderResolver) Resolve(ctx context.Context, providers map[string]*Provider, envName string) map[string]string {
+//
+// Hard fail: if any provider returns an error while fetching a variable, or any
+// transformer fails to resolve its inputs, Resolve aborts and returns the error.
+// We don't run partially-resolved pipelines — a missing secret means the rest of
+// the pipeline can't be trusted.
+func (r *ProviderResolver) Resolve(ctx context.Context, providers map[string]*Provider, envName string) (map[string]string, error) {
 	vars := make(map[string]string)
 	secretCount := 0
 
@@ -50,17 +59,21 @@ func (r *ProviderResolver) Resolve(ctx context.Context, providers map[string]*Pr
 		case "transformer":
 			r.Log.Info(fmt.Sprintf("provider %q (priority: %d, type: %s) → %d transformers",
 				entry.name, p.Priority, p.Type, len(p.Transformers)))
-			r.resolveTransformers(p, vars, &secretCount, envName)
+			if err := r.resolveTransformers(p, vars, &secretCount, envName); err != nil {
+				return nil, fmt.Errorf("provider %q: %w", entry.name, err)
+			}
 		default:
 			r.Log.Info(fmt.Sprintf("provider %q (priority: %d, type: %s) → %d variables",
 				entry.name, p.Priority, p.Type, len(p.Variables)))
-			r.resolveStandardVars(ctx, p, vars, &secretCount, envName)
+			if err := r.resolveStandardVars(ctx, p, vars, &secretCount, envName); err != nil {
+				return nil, fmt.Errorf("provider %q: %w", entry.name, err)
+			}
 		}
 	}
 
 	r.Log.Info(fmt.Sprintf("session: %d variables loaded (%d secrets masked)", len(vars), secretCount))
 
-	return vars
+	return vars, nil
 }
 
 // loadGlobals pre-loads variables from ~/.nitro/config.json that are in the globals allowlist.
@@ -91,7 +104,7 @@ func (r *ProviderResolver) loadGlobals(vars map[string]string, secretCount *int)
 	r.Log.Info(fmt.Sprintf("  %d/%d globals loaded", loaded, len(r.Globals)))
 }
 
-func (r *ProviderResolver) resolveStandardVars(ctx context.Context, p *Provider, vars map[string]string, secretCount *int, envName string) {
+func (r *ProviderResolver) resolveStandardVars(ctx context.Context, p *Provider, vars map[string]string, secretCount *int, envName string) error {
 	for i := range p.Variables {
 		v := &p.Variables[i]
 
@@ -99,9 +112,12 @@ func (r *ProviderResolver) resolveStandardVars(ctx context.Context, p *Provider,
 			continue
 		}
 
-		value := r.resolveVariable(ctx, p, v)
+		value, err := r.resolveVariable(ctx, p, v, vars, envName)
+		if err != nil {
+			return fmt.Errorf("variable %q: %w", v.Name, err)
+		}
 		if value == "" {
-			continue // no value resolved, keep previous (global or lower-priority provider)
+			continue // no value resolved and no default — preserve any prior layer's value
 		}
 
 		vars[v.Name] = value
@@ -111,9 +127,10 @@ func (r *ProviderResolver) resolveStandardVars(ctx context.Context, p *Provider,
 			*secretCount++
 		}
 	}
+	return nil
 }
 
-func (r *ProviderResolver) resolveTransformers(p *Provider, vars map[string]string, secretCount *int, envName string) {
+func (r *ProviderResolver) resolveTransformers(p *Provider, vars map[string]string, secretCount *int, envName string) error {
 	for i := range p.Transformers {
 		t := &p.Transformers[i]
 
@@ -121,13 +138,15 @@ func (r *ProviderResolver) resolveTransformers(p *Provider, vars map[string]stri
 			continue
 		}
 
-		// Collect referenced variable values.
+		// Collect referenced variable values. Missing inputs are a hard fail —
+		// continuing with empty values would silently produce wrong output (e.g. an
+		// envfile with KEY= entries that the consumer can't distinguish from intended ones).
 		refVars := make(map[string]string, len(t.Vars))
 		for _, varName := range t.Vars {
 			val, ok := vars[varName]
 			if !ok {
 				r.Log.Fail(fmt.Sprintf("  %s: references %q which is not resolved yet", t.Name, varName))
-				val = ""
+				return fmt.Errorf("transformer %q: references variable %q which is not resolved (check provider order/priority)", t.Name, varName)
 			}
 			refVars[varName] = val
 		}
@@ -138,7 +157,7 @@ func (r *ProviderResolver) resolveTransformers(p *Provider, vars map[string]stri
 			rendered, err := r.evalFormat(t.Name, t.Format, refVars)
 			if err != nil {
 				r.Log.Fail(fmt.Sprintf("  %s: format error: %s", t.Name, err))
-				continue
+				return fmt.Errorf("transformer %q: %w", t.Name, err)
 			}
 			value = rendered
 		default: // "envfile"
@@ -166,6 +185,7 @@ func (r *ProviderResolver) resolveTransformers(p *Provider, vars map[string]stri
 		}
 		r.Log.Info(fmt.Sprintf("  %s: transformed from %d variables", label, len(t.Vars)))
 	}
+	return nil
 }
 
 // evalFormat renders a Go template using the referenced variable values as context.
@@ -185,28 +205,40 @@ func (r *ProviderResolver) evalFormat(name, format string, vars map[string]strin
 }
 
 // resolveVariable resolves a variable from its provider.
-// Fallback: default (only for non-secret variables, validated at load time).
-// Returns "" if nothing resolved — the caller preserves any existing value.
-func (r *ProviderResolver) resolveVariable(ctx context.Context, p *Provider, v *Variable) string {
-	value, err := r.fetchFromProvider(ctx, p, v)
-	if err == nil && value != "" {
-		return value
-	}
+//
+// `vars` is the in-progress resolution map — some providers (e.g. aws-secretsmanager
+// with credentialsFromVars) need to read already-resolved values from it.
+//
+// Behavior:
+//   - Provider error (e.g. AWS GetSecretValue fails): hard fail. We don't fall back to
+//     the default, because an error means the source is broken — not that the value is
+//     simply absent — and continuing with a default would mask the real problem.
+//   - Provider returns no value but no error (e.g. env var unset): fall back to default
+//     if one is configured; otherwise return "" so the caller preserves any prior layer.
+func (r *ProviderResolver) resolveVariable(ctx context.Context, p *Provider, v *Variable, vars map[string]string, envName string) (string, error) {
+	value, err := r.fetchFromProvider(ctx, p, v, vars, envName)
 	if err != nil {
 		r.Log.Fail(fmt.Sprintf("  %s: %s", v.Name, err))
+		return "", err
+	}
+	if value != "" {
+		return value, nil
 	}
 
-	// Fallback: default (only allowed for non-secret variables; validated at load time).
+	// Empty value, no error → fall back to default (validated to exist only on non-secrets).
 	if v.Default != nil {
 		r.Log.Info(fmt.Sprintf("  %s: using default", v.Name))
-		return *v.Default
+		return *v.Default, nil
 	}
 
-	return ""
+	return "", nil
 }
 
 // fetchFromProvider calls the provider-specific resolver.
-func (r *ProviderResolver) fetchFromProvider(ctx context.Context, p *Provider, v *Variable) (string, error) {
+// `vars` provides access to already-resolved values (needed by aws-secretsmanager
+// to read static credentials). `envName` selects per-env options, e.g. which
+// credentialsFromVars entry applies.
+func (r *ProviderResolver) fetchFromProvider(ctx context.Context, p *Provider, v *Variable, vars map[string]string, envName string) (string, error) {
 	switch p.Type {
 	case "env":
 		value, ok := os.LookupEnv(v.Path)
@@ -216,14 +248,11 @@ func (r *ProviderResolver) fetchFromProvider(ctx context.Context, p *Provider, v
 		return "", nil
 
 	case "aws-secretsmanager":
-		if r.awsResolver == nil {
-			resolver, err := newAWSResolver(ctx, p.Region)
-			if err != nil {
-				return "", err
-			}
-			r.awsResolver = resolver
+		resolver, err := r.awsResolverFor(ctx, p, vars, envName)
+		if err != nil {
+			return "", err
 		}
-		return r.awsResolver.resolve(ctx, v)
+		return resolver.resolve(ctx, v)
 
 	case "bitwarden":
 		if r.bwResolver == nil {
@@ -238,6 +267,68 @@ func (r *ProviderResolver) fetchFromProvider(ctx context.Context, p *Provider, v
 	default:
 		return "", nil
 	}
+}
+
+// awsResolverFor returns (creating if needed) the AWS resolver for this provider
+// in the current env. Resolvers are cached by (region + access key) so different
+// credential sets each get their own SDK client and secret-value cache.
+func (r *ProviderResolver) awsResolverFor(ctx context.Context, p *Provider, vars map[string]string, envName string) (*awsResolver, error) {
+	creds, err := pickAWSCreds(p.CredentialsFromVars, vars, envName)
+	if err != nil {
+		return nil, err
+	}
+
+	cacheKey := p.Region + "|"
+	if creds != nil {
+		cacheKey += creds.AccessKeyID
+	} else {
+		cacheKey += "<sdk-default-chain>"
+	}
+
+	if r.awsResolvers == nil {
+		r.awsResolvers = make(map[string]*awsResolver)
+	}
+	if existing, ok := r.awsResolvers[cacheKey]; ok {
+		return existing, nil
+	}
+
+	resolver, err := newAWSResolver(ctx, p.Region, creds)
+	if err != nil {
+		return nil, err
+	}
+	r.awsResolvers[cacheKey] = resolver
+	return resolver, nil
+}
+
+// pickAWSCreds selects the credentialsFromVars entry for envName and resolves
+// the referenced variable values from `vars`. Returns nil (use SDK default chain)
+// when credentialsFromVars is unset or has no entry for this env. Errors when
+// an entry exists but its referenced variables are not in `vars` — that's a
+// config mistake (wrong provider order/priority), not a runtime miss.
+func pickAWSCreds(refs map[string]*AWSCredentialsRef, vars map[string]string, envName string) (*awsStaticCreds, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	ref, ok := refs[envName]
+	if !ok || ref == nil {
+		return nil, nil // no entry for this env → fall back to SDK default chain
+	}
+
+	ak, okAK := vars[ref.AccessKeyID]
+	sk, okSK := vars[ref.SecretAccessKey]
+	if !okAK || ak == "" {
+		return nil, fmt.Errorf("credentialsFromVars[%q]: access key variable %q is not resolved (must come from globals or a higher-priority provider)", envName, ref.AccessKeyID)
+	}
+	if !okSK || sk == "" {
+		return nil, fmt.Errorf("credentialsFromVars[%q]: secret key variable %q is not resolved (must come from globals or a higher-priority provider)", envName, ref.SecretAccessKey)
+	}
+	creds := &awsStaticCreds{AccessKeyID: ak, SecretAccessKey: sk}
+	if ref.SessionToken != "" {
+		if tok, ok := vars[ref.SessionToken]; ok {
+			creds.SessionToken = tok
+		}
+	}
+	return creds, nil
 }
 
 type providerEntry struct {

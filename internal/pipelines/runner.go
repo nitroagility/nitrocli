@@ -20,6 +20,10 @@ type Runner struct {
 	Executor *Executor
 	Provider *ProviderResolver
 	Log      *Logger
+
+	// preResolved caches provider output per env, populated by RunAll's preflight
+	// so we fail fast before running any build/deploy phase.
+	preResolved map[string]map[string]string
 }
 
 // RunOptions controls which phases of the pipeline to execute.
@@ -57,12 +61,43 @@ func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 // RunAll executes the pipeline for multiple environments in dependency order.
 // Environments are topologically sorted based on promotesFrom relationships
 // between the requested environments. Disconnected environments run in any order.
+//
+// Flow:
+//  1. Preflight: resolve providers for every requested env upfront. If any secret
+//     fetch fails (AWS/Bitwarden error, missing required value, transformer input
+//     missing) the whole run aborts here — we don't start docker builds or helm
+//     deploys on a half-resolved config.
+//  2. Execute: run each env's phases using its pre-resolved variables.
+//
+// Resolve() is idempotent and the AWS resolver caches by secret path, so resolving
+// during preflight and again inside Run() does not duplicate API calls. We cache
+// the result map directly to avoid even the map-building overhead.
 func (r *Runner) RunAll(ctx context.Context, envNames []string, opts RunOptions) error {
 	sorted, err := r.topoSortEnvs(envNames)
 	if err != nil {
 		return err
 	}
 
+	// ── Phase 1: preflight ─────────────────────────────────────────
+	r.preResolved = make(map[string]map[string]string, len(sorted))
+	if len(r.Config.Providers) > 0 {
+		r.Log.Separator()
+		r.Log.Header("Preflight: resolving providers for all environments")
+		r.Log.Info(fmt.Sprintf("environments: %s", strings.Join(sorted, ", ")))
+		r.Log.Separator()
+
+		for _, envName := range sorted {
+			r.Log.Step(fmt.Sprintf("Resolving %q", envName))
+			vars, resErr := r.Provider.Resolve(ctx, r.Config.Providers, envName)
+			if resErr != nil {
+				return fmt.Errorf("preflight: env %q: %w", envName, resErr)
+			}
+			r.preResolved[envName] = vars
+		}
+		r.Log.Separator()
+	}
+
+	// ── Phase 2: execute ───────────────────────────────────────────
 	for _, envName := range sorted {
 		if err := r.Run(ctx, envName, opts); err != nil {
 			return err
@@ -157,7 +192,10 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 	start := time.Now()
 
 	r.printHeader(envName, env, opts)
-	r.resolveProviders(ctx, envName, opts)
+	if err := r.resolveProviders(ctx, envName, opts); err != nil {
+		r.printFailure(start, err)
+		return err
+	}
 
 	// Global preRun.
 	if err := r.runHooks(ctx, r.envName, "Global pre-run", r.Config.PreRun); err != nil {
@@ -241,12 +279,26 @@ func (r *Runner) printHeader(envName string, env *Environment, opts RunOptions) 
 	r.Log.Separator()
 }
 
-func (r *Runner) resolveProviders(ctx context.Context, envName string, opts RunOptions) {
+func (r *Runner) resolveProviders(ctx context.Context, envName string, opts RunOptions) error {
 	r.Log.Step("Resolving providers")
 
-	var vars map[string]string
-	if len(r.Config.Providers) > 0 {
-		vars = r.Provider.Resolve(ctx, r.Config.Providers, envName)
+	var (
+		vars map[string]string
+		err  error
+	)
+	// Use the preflight cache if RunAll populated it; falls back to live resolution
+	// when Run is invoked directly (e.g. single-env CLI call).
+	if cached, ok := r.preResolved[envName]; ok {
+		vars = make(map[string]string, len(cached))
+		for k, v := range cached {
+			vars[k] = v
+		}
+		r.Log.Info(fmt.Sprintf("using preflight-resolved variables (%d)", len(vars)))
+	} else if len(r.Config.Providers) > 0 {
+		vars, err = r.Provider.Resolve(ctx, r.Config.Providers, envName)
+		if err != nil {
+			return err
+		}
 	} else {
 		vars = make(map[string]string)
 	}
@@ -266,6 +318,7 @@ func (r *Runner) resolveProviders(ctx context.Context, envName string, opts RunO
 	r.Executor.EvalEnvValues()
 
 	r.Log.Separator()
+	return nil
 }
 
 // ── Build Phase ──────────────────────────────────────
