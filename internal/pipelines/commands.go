@@ -39,15 +39,73 @@ func (b *CommandBuilder) BuildStepCommand(s *BuildStep) []string {
 }
 
 // HelmDeploy returns the helm upgrade/install command for a deploy.
+//
+// Parameters is a free-form shell-command tail (e.g. `--set foo=bar --set baz="with spaces"`).
+// It is shell-split so each flag / value lands as its own argv entry, otherwise helm
+// would see the whole blob as a single argument and reject it with "unknown flag: ...".
 func (b *CommandBuilder) HelmDeploy(envName string, d *Deploy) []string {
 	args := []string{"helm", "upgrade", "--install", envName, d.Chart, "--namespace", d.Namespace}
 	if d.Repo != "" {
 		args = append(args, "--repo", d.Repo)
 	}
 	if d.Parameters != "" {
-		args = append(args, d.Parameters)
+		args = append(args, splitShellArgs(d.Parameters)...)
 	}
 	return args
+}
+
+// splitShellArgs performs a minimal POSIX-style split of s into argv tokens,
+// preserving quoted regions. It supports single quotes (literal), double quotes
+// (literal except \"), and \ escapes outside quotes. It does NOT do env expansion
+// or globbing — templates were already expanded before we got here.
+func splitShellArgs(s string) []string {
+	var (
+		tokens  []string
+		cur     strings.Builder
+		inSingle bool
+		inDouble bool
+		escaped  bool
+	)
+
+	flush := func() {
+		tokens = append(tokens, cur.String())
+		cur.Reset()
+	}
+
+	hasToken := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+
+		if escaped {
+			cur.WriteByte(c)
+			escaped = false
+			hasToken = true
+			continue
+		}
+
+		switch {
+		case !inSingle && !inDouble && c == '\\':
+			escaped = true
+		case !inSingle && c == '"':
+			inDouble = !inDouble
+			hasToken = true
+		case !inDouble && c == '\'':
+			inSingle = !inSingle
+			hasToken = true
+		case !inSingle && !inDouble && (c == ' ' || c == '\t' || c == '\n'):
+			if hasToken {
+				flush()
+				hasToken = false
+			}
+		default:
+			cur.WriteByte(c)
+			hasToken = true
+		}
+	}
+	if hasToken {
+		flush()
+	}
+	return tokens
 }
 
 // FormatCommand joins command parts into a single string.
