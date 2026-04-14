@@ -1,4 +1,4 @@
-package pipelines
+package core
 
 import (
 	"bytes"
@@ -22,6 +22,7 @@ type ProviderResolver struct {
 	Log          *Logger
 	Masker       *Masker
 	Globals      map[string]bool // allowlist: only these variables can be resolved from ~/.nitro/config.json
+	connResolver *ConnectionResolver
 	awsResolvers map[string]*awsResolver
 	bwResolver   *bitwardenResolver
 }
@@ -39,14 +40,23 @@ type ProviderResolver struct {
 // transformer fails to resolve its inputs, Resolve aborts and returns the error.
 // We don't run partially-resolved pipelines — a missing secret means the rest of
 // the pipeline can't be trusted.
-func (r *ProviderResolver) Resolve(ctx context.Context, providers map[string]*Provider, envName string) (map[string]string, error) {
+func (r *ProviderResolver) Resolve(ctx context.Context, providers map[string]*Provider, connections map[string]*Connection, cr *ConnectionResolver, envName string) (map[string]string, error) {
 	vars := make(map[string]string)
 	secretCount := 0
 
 	// Phase 1: bootstrap globals from ~/.nitro/config.json.
 	r.loadGlobals(vars, &secretCount)
 
-	// Phase 2: resolve providers (high priority number first → low priority number last wins).
+	// Phase 2: resolve connections (AFTER globals, BEFORE providers).
+	r.connResolver = cr
+	if cr != nil && len(connections) > 0 {
+		r.Log.Step("Resolving connections")
+		if err := cr.Resolve(ctx, connections, envName, vars); err != nil {
+			return nil, fmt.Errorf("connections: %w", err)
+		}
+	}
+
+	// Phase 3: resolve providers (high priority number first → low priority number last wins).
 	applicable := r.applicableProviders(providers, envName)
 	sort.Slice(applicable, func(i, j int) bool {
 		return applicable[i].provider.Priority > applicable[j].provider.Priority
@@ -273,6 +283,26 @@ func (r *ProviderResolver) fetchFromProvider(ctx context.Context, p *Provider, v
 // in the current env. Resolvers are cached by (region + access key) so different
 // credential sets each get their own SDK client and secret-value cache.
 func (r *ProviderResolver) awsResolverFor(ctx context.Context, p *Provider, vars map[string]string, envName string) (*awsResolver, error) {
+	if r.awsResolvers == nil {
+		r.awsResolvers = make(map[string]*awsResolver)
+	}
+
+	// Prefer a named connection's SDK config when the provider declares one.
+	if p.Connection != "" && r.connResolver != nil {
+		cacheKey := "conn:" + p.Connection
+		if existing, ok := r.awsResolvers[cacheKey]; ok {
+			return existing, nil
+		}
+		resolved := r.connResolver.AWSConfig(p.Connection)
+		if resolved == nil {
+			return nil, fmt.Errorf("connection %q not resolved (check connection name and envs)", p.Connection)
+		}
+		resolver := newAWSResolverFromConfig(resolved.cfg)
+		r.awsResolvers[cacheKey] = resolver
+		return resolver, nil
+	}
+
+	// Fallback: credentialsFromVars or SDK default chain (backward compatible).
 	creds, err := pickAWSCreds(p.CredentialsFromVars, vars, envName)
 	if err != nil {
 		return nil, err
@@ -285,9 +315,6 @@ func (r *ProviderResolver) awsResolverFor(ctx context.Context, p *Provider, vars
 		cacheKey += "<sdk-default-chain>"
 	}
 
-	if r.awsResolvers == nil {
-		r.awsResolvers = make(map[string]*awsResolver)
-	}
 	if existing, ok := r.awsResolvers[cacheKey]; ok {
 		return existing, nil
 	}

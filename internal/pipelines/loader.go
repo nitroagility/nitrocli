@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/nitroagility/nitrocli/internal/core"
 )
 
 // PipelineError is a structured error with phase, summary, and detail lines.
@@ -28,30 +30,30 @@ func FormatError(err error) string {
 	var pe *PipelineError
 	if !errors.As(err, &pe) {
 		return "\n" +
-			styleRed.Render("  ✗ Error") + "\n" +
-			styleDim.Render("  ──────────────────────────────────────────────") + "\n" +
-			"  " + styleMuted.Render(err.Error()) + "\n" +
-			styleDim.Render("  ──────────────────────────────────────────────") + "\n"
+			core.StyleRed.Render("  ✗ Error") + "\n" +
+			core.StyleDim.Render("  ──────────────────────────────────────────────") + "\n" +
+			"  " + core.StyleMuted.Render(err.Error()) + "\n" +
+			core.StyleDim.Render("  ──────────────────────────────────────────────") + "\n"
 	}
 
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(styleRed.Render("  ✗ "+pe.Summary) + styleDim.Render(fmt.Sprintf("  [%s]", pe.Phase)) + "\n")
-	b.WriteString(styleDim.Render("  ──────────────────────────────────────────────") + "\n")
+	b.WriteString(core.StyleRed.Render("  ✗ "+pe.Summary) + core.StyleDim.Render(fmt.Sprintf("  [%s]", pe.Phase)) + "\n")
+	b.WriteString(core.StyleDim.Render("  ──────────────────────────────────────────────") + "\n")
 
 	for _, d := range pe.Details {
 		for _, line := range strings.Split(strings.TrimSpace(d), "\n") {
 			if line == "" {
 				continue
 			}
-			b.WriteString("  " + styleMuted.Render("  "+line) + "\n")
+			b.WriteString("  " + core.StyleMuted.Render("  "+line) + "\n")
 		}
 	}
 
-	b.WriteString(styleDim.Render("  ──────────────────────────────────────────────") + "\n")
+	b.WriteString(core.StyleDim.Render("  ──────────────────────────────────────────────") + "\n")
 
 	if pe.Hint != "" {
-		b.WriteString("  " + styleYellow.Render("hint: ") + styleMuted.Render(pe.Hint) + "\n")
+		b.WriteString("  " + core.StyleYellow.Render("hint: ") + core.StyleMuted.Render(pe.Hint) + "\n")
 	}
 
 	return b.String()

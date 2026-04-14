@@ -11,15 +11,16 @@ import (
 // Runner orchestrates pipeline execution by coordinating loader, commands,
 // executor, providers, and output.
 type Runner struct {
-	Config   *Config
-	DryRun   bool
-	Unsafe   bool
-	Workdir  string
-	envName  string
-	Commands *CommandBuilder
-	Executor *Executor
-	Provider *ProviderResolver
-	Log      *Logger
+	Config      *Config
+	DryRun      bool
+	Unsafe      bool
+	Workdir     string
+	envName     string
+	Commands    *CommandBuilder
+	Executor    *Executor
+	Provider    *ProviderResolver
+	Connections *ConnectionResolver
+	Log         *Logger
 
 	// preResolved caches provider output per env, populated by RunAll's preflight
 	// so we fail fast before running any build/deploy phase.
@@ -30,6 +31,7 @@ type Runner struct {
 type RunOptions struct {
 	Build       bool
 	Deploy      bool
+	Undeploy    bool // mutually exclusive with Build
 	BuildNumber string
 	Unsafe      bool // disables path traversal protection for workdir
 }
@@ -47,14 +49,17 @@ func NewRunner(cfg *Config, dryRun bool, workdir string) *Runner {
 		globals[g] = true
 	}
 
+	connResolver := &ConnectionResolver{Log: log, Masker: masker}
+
 	return &Runner{
-		Config:   cfg,
-		DryRun:   dryRun,
-		Workdir:  workdir,
-		Commands: &CommandBuilder{},
-		Executor: &Executor{DryRun: dryRun, Log: log, Masker: masker},
-		Provider: &ProviderResolver{Log: log, Masker: masker, Globals: globals},
-		Log:      log,
+		Config:      cfg,
+		DryRun:      dryRun,
+		Workdir:     workdir,
+		Commands:    &CommandBuilder{},
+		Executor:    &Executor{DryRun: dryRun, Log: log, Masker: masker, ConnResolver: connResolver},
+		Provider:    &ProviderResolver{Log: log, Masker: masker, Globals: globals},
+		Connections: connResolver,
+		Log:         log,
 	}
 }
 
@@ -88,7 +93,7 @@ func (r *Runner) RunAll(ctx context.Context, envNames []string, opts RunOptions)
 
 		for _, envName := range sorted {
 			r.Log.Step(fmt.Sprintf("Resolving %q", envName))
-			vars, resErr := r.Provider.Resolve(ctx, r.Config.Providers, envName)
+			vars, resErr := r.Provider.Resolve(ctx, r.Config.Providers, r.Config.Connections, r.Connections, envName)
 			if resErr != nil {
 				return fmt.Errorf("preflight: env %q: %w", envName, resErr)
 			}
@@ -217,6 +222,13 @@ func (r *Runner) Run(ctx context.Context, envName string, opts RunOptions) error
 		}
 	}
 
+	if opts.Undeploy {
+		if err := r.runUndeployPhase(ctx, envName, env); err != nil {
+			r.printFailure(start, err)
+			return err
+		}
+	}
+
 	// Global postRun.
 	if err := r.runHooks(ctx, r.envName, "Global post-run", r.Config.PostRun); err != nil {
 		r.printFailure(start, err)
@@ -268,6 +280,9 @@ func (r *Runner) printHeader(envName string, env *Environment, opts RunOptions) 
 	if opts.Deploy {
 		phases = append(phases, "deploy")
 	}
+	if opts.Undeploy {
+		phases = append(phases, "undeploy")
+	}
 
 	r.Log.Separator()
 	r.Log.Header(fmt.Sprintf("Pipeline Run [%s]", mode))
@@ -295,7 +310,7 @@ func (r *Runner) resolveProviders(ctx context.Context, envName string, opts RunO
 		}
 		r.Log.Info(fmt.Sprintf("using preflight-resolved variables (%d)", len(vars)))
 	} else if len(r.Config.Providers) > 0 {
-		vars, err = r.Provider.Resolve(ctx, r.Config.Providers, envName)
+		vars, err = r.Provider.Resolve(ctx, r.Config.Providers, r.Config.Connections, r.Connections, envName)
 		if err != nil {
 			return err
 		}
@@ -456,7 +471,7 @@ func (r *Runner) runBuildSteps(ctx context.Context, art *Artifact, workdir strin
 	steps := filterSteps(art.Build, r.envName)
 	for i, s := range steps {
 		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
-		if err := r.Executor.Run(ctx, r.Commands.BuildStepCommand(&s), workdir); err != nil {
+		if err := r.Executor.RunWithConnection(ctx, r.Commands.BuildStepCommand(&s), workdir, s.Connection); err != nil {
 			return err
 		}
 	}
@@ -477,12 +492,16 @@ func (r *Runner) runDeploy(ctx context.Context, label string, d *Deploy, workdir
 	switch d.Type {
 	case "helm":
 		args := r.Commands.HelmDeploy(label, d)
-		err = r.Executor.Run(ctx, args, workdir)
+		err = r.Executor.RunWithConnection(ctx, args, workdir, d.Connection)
 	case "script":
 		steps := filterSteps(d.Steps, r.envName)
 		for i, s := range steps {
 			r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
-			if err := r.Executor.Run(ctx, r.Commands.BuildStepCommand(&s), workdir); err != nil {
+			conn := s.Connection
+			if conn == "" {
+				conn = d.Connection // inherit from deploy block
+			}
+			if err := r.Executor.RunWithConnection(ctx, r.Commands.BuildStepCommand(&s), workdir, conn); err != nil {
 				return err
 			}
 		}
@@ -517,6 +536,95 @@ func (r *Runner) runDeployPhase(ctx context.Context, envName string, env *Enviro
 	return r.runDeploy(ctx, envName, env.Deploy, r.Workdir)
 }
 
+// ── Undeploy ────────────────────────────────────────
+
+// runUndeploy is the mirror of runDeploy. For helm it runs "uninstall" instead
+// of "upgrade --install". For script/filesystem it runs the user-defined steps.
+func (r *Runner) runUndeploy(ctx context.Context, label string, d *Deploy, workdir string) error {
+	if err := r.runHooks(ctx, r.envName, label+" undeploy pre-run", d.PreRun); err != nil {
+		return err
+	}
+
+	r.Log.Step(fmt.Sprintf("undeploy --> %s (%s)", label, d.Type))
+
+	var err error
+	switch d.Type {
+	case "helm":
+		args := r.Commands.HelmUninstall(label, d)
+		err = r.Executor.RunWithConnection(ctx, args, workdir, d.Connection)
+	case "script":
+		steps := filterSteps(d.Steps, r.envName)
+		for i, s := range steps {
+			r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(steps), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
+			conn := s.Connection
+			if conn == "" {
+				conn = d.Connection
+			}
+			if err := r.Executor.RunWithConnection(ctx, r.Commands.BuildStepCommand(&s), workdir, conn); err != nil {
+				return err
+			}
+		}
+	case "filesystem":
+		dst := r.Executor.EvalString(d.Destination)
+		r.Log.Info(fmt.Sprintf("  rm -rf %s", dst))
+		rmArgs := []string{"rm", "-rf", dst}
+		err = r.Executor.Run(ctx, rmArgs, workdir)
+	default:
+		r.Log.Info(fmt.Sprintf("unknown undeploy type: %s", d.Type))
+	}
+
+	if err != nil {
+		return err
+	}
+
+	r.Log.Separator()
+
+	if err := r.runHooks(ctx, r.envName, label+" undeploy post-run", d.PostRun); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// runUndeployPhase runs undeploy for artifacts first (cleanup), then environment-level.
+// This is the inverse order of deploy: artifacts are torn down before the environment.
+func (r *Runner) runUndeployPhase(ctx context.Context, envName string, env *Environment) error {
+	// 1. Artifact-level undeploy (cleanup ECR repos, etc.)
+	for name, art := range r.Config.Artifacts {
+		if art.Undeploy == nil {
+			continue
+		}
+		if len(env.Artifacts) > 0 && !contains(env.Artifacts, name) {
+			continue
+		}
+		workdir, err := r.resolveWorkdir(art)
+		if err != nil {
+			return err
+		}
+		if err := r.runUndeploy(ctx, name, art.Undeploy, workdir); err != nil {
+			return err
+		}
+	}
+
+	// 2. Environment-level undeploy (helm uninstall, etc.)
+	if env.Undeploy != nil {
+		if err := r.runUndeploy(ctx, envName, env.Undeploy, r.Workdir); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func contains(items []string, target string) bool {
+	for _, s := range items {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Hooks ────────────────────────────────────────────
 
 func (r *Runner) runHooks(ctx context.Context, envName string, label string, steps []BuildStep) error {
@@ -534,7 +642,7 @@ func (r *Runner) runHooks(ctx context.Context, envName string, label string, ste
 	for i, s := range applicable {
 		r.Log.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(applicable), r.Commands.FormatCommand(r.Commands.BuildStepCommand(&s))))
 		args := r.Commands.BuildStepCommand(&s)
-		if err := r.Executor.Run(ctx, args, r.Workdir); err != nil {
+		if err := r.Executor.RunWithConnection(ctx, args, r.Workdir, s.Connection); err != nil {
 			return fmt.Errorf("%s step %d failed: %w", label, i+1, err)
 		}
 	}

@@ -1,9 +1,30 @@
 // Package pipelines implements pipeline loading, validation, and execution.
 package pipelines
 
+import "github.com/nitroagility/nitrocli/internal/core"
+
+//nolint:revive // Type aliases re-exported from core — documented in core/types.go.
+type (
+	Connection         = core.Connection
+	ConnectionAuth     = core.ConnectionAuth
+	Provider           = core.Provider
+	AWSCredentialsRef  = core.AWSCredentialsRef
+	Variable           = core.Variable
+	Transformer        = core.Transformer
+	BuildStep          = core.BuildStep
+	Deploy             = core.Deploy
+	BuildPhase         = core.BuildPhase
+	Masker             = core.Masker
+	Logger             = core.Logger
+	Executor           = core.Executor
+	ProviderResolver   = core.ProviderResolver
+	ConnectionResolver = core.ConnectionResolver
+)
+
 // Config is the top-level pipeline configuration.
 type Config struct {
 	Globals      []string                `json:"globals,omitempty"`
+	Connections  map[string]*Connection  `json:"connections,omitempty"`
 	Providers    map[string]*Provider    `json:"providers,omitempty"`
 	PreRun       []BuildStep             `json:"preRun,omitempty"`
 	Artifacts    map[string]*Artifact    `json:"artifacts"`
@@ -29,119 +50,7 @@ func (c *Config) ArtifactNames() []string {
 	return names
 }
 
-// Provider represents an external secrets/config provider.
-type Provider struct {
-	Type                string                        `json:"type"`
-	Priority            int                           `json:"priority"`
-	URL                 string                        `json:"url,omitempty"`
-	Region              string                        `json:"region,omitempty"`
-	CredentialsFromVars map[string]*AWSCredentialsRef `json:"credentialsFromVars,omitempty"`
-	Envs                []string                      `json:"envs"`
-	Variables           []Variable                    `json:"variables,omitempty"`
-	Transformers        []Transformer                 `json:"transformers,omitempty"`
-}
-
-// AWSCredentialsRef names already-resolved variables whose values should be used
-// as AWS credentials for the aws-secretsmanager provider (static credentials
-// provider). Looked up per-environment via Provider.CredentialsFromVars — when
-// no entry exists for the current env, the AWS SDK default chain is used.
-type AWSCredentialsRef struct {
-	AccessKeyID     string `json:"accessKeyID"`
-	SecretAccessKey string `json:"secretAccessKey"`
-	SessionToken    string `json:"sessionToken,omitempty"`
-}
-
-// Transformer derives a new variable by combining multiple resolved variables.
-type Transformer struct {
-	Type    string   `json:"type"`
-	Name    string   `json:"name"`
-	Vars    []string `json:"vars"`
-	Secret  *bool    `json:"secret,omitempty"`
-	Default *string  `json:"default,omitempty"`
-	Base64  *bool    `json:"base64,omitempty"`
-	Format  string   `json:"format,omitempty"`
-	Envs    []string `json:"envs,omitempty"`
-}
-
-// EffectiveType returns the transformer type, defaulting to "envfile".
-func (t *Transformer) EffectiveType() string {
-	if t.Type != "" {
-		return t.Type
-	}
-	return "envfile"
-}
-
-// IsSecret returns true if this transformer is a secret (default: true).
-func (t *Transformer) IsSecret() bool {
-	if t.Secret == nil {
-		return true
-	}
-	return *t.Secret
-}
-
-// IsBase64 returns true if the value should be base64 encoded (default: false).
-func (t *Transformer) IsBase64() bool {
-	if t.Base64 == nil {
-		return false
-	}
-	return *t.Base64
-}
-
-// AppliesToEnv returns true if this transformer applies to the given environment.
-// If Envs is empty, the transformer applies to all environments.
-func (t *Transformer) AppliesToEnv(envName string) bool {
-	if len(t.Envs) == 0 {
-		return true
-	}
-	for _, e := range t.Envs {
-		if e == envName {
-			return true
-		}
-	}
-	return false
-}
-
-// Variable is a single secret reference within a provider.
-type Variable struct {
-	Name    string   `json:"name"`
-	Path    string   `json:"path"`
-	Key     string   `json:"key,omitempty"`
-	Secret  *bool    `json:"secret,omitempty"`
-	Default *string  `json:"default,omitempty"`
-	Envs    []string `json:"envs,omitempty"`
-}
-
-// IsSecret returns true if this variable is a secret (default: true).
-func (v *Variable) IsSecret() bool {
-	if v.Secret == nil {
-		return true
-	}
-	return *v.Secret
-}
-
-// AppliesToEnv returns true if this variable applies to the given environment.
-// If Envs is empty, the variable applies to all environments.
-func (v *Variable) AppliesToEnv(envName string) bool {
-	if len(v.Envs) == 0 {
-		return true
-	}
-	for _, e := range v.Envs {
-		if e == envName {
-			return true
-		}
-	}
-	return false
-}
-
 // Artifact represents a buildable and deployable unit (docker image, binary, package).
-//
-// Build strategy lifecycle:
-//
-//	preRun → preBuild → build → postBuild → preDeploy → deploy → postDeploy → postRun
-//
-// Promote strategy lifecycle:
-//
-//	preRun → preDeploy → promote → postDeploy → postRun
 type Artifact struct {
 	Type       string            `json:"type"`
 	Workdir    string            `json:"workdir,omitempty"`
@@ -152,6 +61,7 @@ type Artifact struct {
 	Build      []BuildStep       `json:"build,omitempty"`
 	Deploy     *Deploy           `json:"deploy,omitempty"`
 	Promote    *Deploy           `json:"promote,omitempty"`
+	Undeploy   *Deploy           `json:"undeploy,omitempty"`
 	Repository Repository        `json:"repository"`
 	PreRun     []BuildStep       `json:"preRun,omitempty"`
 	PreBuild   []BuildStep       `json:"preBuild,omitempty"`
@@ -178,29 +88,6 @@ func (a *Artifact) IsBinary() bool { return a.Type == "binary" }
 // IsPackage returns true if this is a package artifact.
 func (a *Artifact) IsPackage() bool { return a.Type == "package" }
 
-// BuildStep is a single command in a multi-step build.
-type BuildStep struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env,omitempty"`
-	Workdir string            `json:"workdir,omitempty"`
-	Envs    []string          `json:"envs,omitempty"`
-}
-
-// AppliesToEnv returns true if this step should run for the given environment.
-// If Envs is empty, the step runs for all environments.
-func (s *BuildStep) AppliesToEnv(envName string) bool {
-	if len(s.Envs) == 0 {
-		return true
-	}
-	for _, e := range s.Envs {
-		if e == envName {
-			return true
-		}
-	}
-	return false
-}
-
 // Repository defines where an artifact is stored or published.
 type Repository struct {
 	Type  string `json:"type"`
@@ -226,6 +113,7 @@ type Environment struct {
 	Artifacts    []string    `json:"artifacts,omitempty"`
 	Build        *BuildPhase `json:"build,omitempty"`
 	Deploy       *Deploy     `json:"deploy,omitempty"`
+	Undeploy     *Deploy     `json:"undeploy,omitempty"`
 }
 
 // IsBuild returns true if this environment builds from source.
@@ -233,27 +121,3 @@ func (e *Environment) IsBuild() bool { return e.Strategy == "build" }
 
 // IsPromote returns true if this environment promotes from another.
 func (e *Environment) IsPromote() bool { return e.Strategy == "promote" }
-
-// BuildPhase holds pre/post hooks for the build phase.
-type BuildPhase struct {
-	PreRun  []BuildStep `json:"preRun,omitempty"`
-	PostRun []BuildStep `json:"postRun,omitempty"`
-}
-
-// Deploy holds deployment configuration with pre/post hooks.
-// Supported types: "helm", "script", "filesystem".
-// Used by both environments (infra deploy) and artifacts (publish/push).
-type Deploy struct {
-	Type        string         `json:"type"`
-	Chart       string         `json:"chart,omitempty"`
-	Repo        string         `json:"repo,omitempty"`
-	ReleaseName string         `json:"releaseName,omitempty"` // helm only; defaults to envName
-	Namespace   string         `json:"namespace,omitempty"`
-	Parameters  string         `json:"parameters,omitempty"`
-	Values      map[string]any `json:"values,omitempty"`
-	Steps       []BuildStep    `json:"steps,omitempty"`
-	Source      string         `json:"source,omitempty"`
-	Destination string         `json:"destination,omitempty"`
-	PreRun      []BuildStep    `json:"preRun,omitempty"`
-	PostRun     []BuildStep    `json:"postRun,omitempty"`
-}

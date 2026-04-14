@@ -58,14 +58,24 @@ func (b *CommandBuilder) HelmDeploy(envName string, d *Deploy) []string {
 	return args
 }
 
+// HelmUninstall returns the helm uninstall command for an undeploy.
+// Only releaseName and namespace are required — chart, parameters, values are ignored.
+func (b *CommandBuilder) HelmUninstall(envName string, d *Deploy) []string {
+	releaseName := d.ReleaseName
+	if releaseName == "" {
+		releaseName = envName
+	}
+	return []string{"helm", "uninstall", releaseName, "--namespace", d.Namespace}
+}
+
 // splitShellArgs performs a minimal POSIX-style split of s into argv tokens,
 // preserving quoted regions. It supports single quotes (literal), double quotes
 // (literal except \"), and \ escapes outside quotes. It does NOT do env expansion
 // or globbing — templates were already expanded before we got here.
 func splitShellArgs(s string) []string {
 	var (
-		tokens  []string
-		cur     strings.Builder
+		tokens   []string
+		cur      strings.Builder
 		inSingle bool
 		inDouble bool
 		escaped  bool

@@ -41,6 +41,7 @@ func newPipelinesCmd() *cobra.Command {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			doBuild, _ := cmd.Flags().GetBool("build")
 			doDeploy, _ := cmd.Flags().GetBool("deploy")
+			doUndeploy, _ := cmd.Flags().GetBool("undeploy")
 			buildNumber, _ := cmd.Flags().GetString("build-number")
 			unsafe, _ := cmd.Flags().GetBool("unsafe")
 			globalFlag, _ := cmd.Flags().GetString("global")
@@ -54,11 +55,20 @@ func newPipelinesCmd() *cobra.Command {
 				})
 			}
 
-			if !doBuild && !doDeploy {
+			if doUndeploy && (doBuild || doDeploy) {
+				return pipelineError(&pipelines.PipelineError{
+					Phase:   "args",
+					Summary: "Conflicting phases",
+					Details: []string{"--undeploy cannot be combined with --build or --deploy"},
+					Hint:    "usage: nitro pipelines run -e prod --undeploy",
+				})
+			}
+
+			if !doBuild && !doDeploy && !doUndeploy {
 				return pipelineError(&pipelines.PipelineError{
 					Phase:   "args",
 					Summary: "No phase selected",
-					Details: []string{"at least one of --build or --deploy must be specified"},
+					Details: []string{"at least one of --build, --deploy, or --undeploy must be specified"},
 					Hint:    "usage: nitro pipelines run -e dev --build --deploy",
 				})
 			}
@@ -98,6 +108,7 @@ func newPipelinesCmd() *cobra.Command {
 			opts := pipelines.RunOptions{
 				Build:       doBuild,
 				Deploy:      doDeploy,
+				Undeploy:    doUndeploy,
 				BuildNumber: buildNumber,
 				Unsafe:      unsafe,
 			}
@@ -115,6 +126,7 @@ func newPipelinesCmd() *cobra.Command {
 	runCmd.Flags().BoolP("dry-run", "n", false, "print commands without executing")
 	runCmd.Flags().Bool("build", false, "run the build phase")
 	runCmd.Flags().Bool("deploy", false, "run the deploy phase")
+	runCmd.Flags().Bool("undeploy", false, "run the undeploy phase (tears down deploy: helm uninstall, cleanup scripts)")
 	runCmd.Flags().String("build-number", "", "build number used for tagging artifacts")
 	runCmd.Flags().Bool("unsafe", false, "allow workdir paths outside the base directory (disables path traversal protection)")
 	runCmd.Flags().String("global", "", "comma-separated list of variable names to import from ~/.nitro/config.json (additive to pipeline globals)")
