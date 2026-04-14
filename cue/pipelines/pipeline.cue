@@ -50,7 +50,7 @@ import "github.com/nitroagility/nitrocli/core@v0"
 	buildArgs?: [string]: string
 	deploy?:    core.#DeployPhase
 	promote?:   core.#DeployPhase
-	undeploy?:  core.#DeployPhase
+	undeploy?:  core.#UndeployPhase
 	repository: #DockerRegistry
 }
 
@@ -62,7 +62,7 @@ import "github.com/nitroagility/nitrocli/core@v0"
 	build:     [core.#BuildCommand, ...core.#BuildCommand]
 	deploy?:   core.#DeployPhase
 	promote?:  core.#DeployPhase
-	undeploy?: core.#DeployPhase
+	undeploy?: core.#UndeployPhase
 	repository: #FilesystemRepo
 }
 
@@ -74,7 +74,7 @@ import "github.com/nitroagility/nitrocli/core@v0"
 	build:     [core.#BuildCommand, ...core.#BuildCommand]
 	deploy?:   core.#DeployPhase
 	promote?:  core.#DeployPhase
-	undeploy?: core.#DeployPhase
+	undeploy?: core.#UndeployPhase
 	repository: #PackageRepo
 }
 
@@ -91,7 +91,7 @@ _#BuildEnvironment: {
 	artifacts?:    [...string]
 	build?:        core.#BuildPhase
 	deploy?:       core.#DeployPhase
-	undeploy?:     core.#DeployPhase
+	undeploy?:     core.#UndeployPhase
 }
 
 // Promote from another environment (promotesFrom required)
@@ -101,7 +101,7 @@ _#PromoteEnvironment: {
 	artifacts?:   [...string]
 	build?:       core.#BuildPhase
 	deploy?:      core.#DeployPhase
-	undeploy?:    core.#DeployPhase
+	undeploy?:    core.#UndeployPhase
 }
 
 #Environment: _#BuildEnvironment | _#PromoteEnvironment

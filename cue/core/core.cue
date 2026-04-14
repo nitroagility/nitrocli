@@ -173,6 +173,28 @@ _#TemplateTransformer: {
 	postRun?: [...#BuildCommand]
 }
 
+// Undeploy: helm only needs releaseName + namespace (no chart/parameters).
+// Script and filesystem are identical to deploy (user defines cleanup steps).
+#HelmUndeploy: {
+	type:         "helm"
+	connection?:  string & =~".+"
+	releaseName?: string & =~".+"
+	namespace:    string & =~".+"
+}
+
+#FilesystemUndeploy: {
+	type:        "filesystem"
+	destination: string & =~".+"
+}
+
+#Undeploy: #HelmUndeploy | #ScriptDeploy | #FilesystemUndeploy
+
+#UndeployPhase: {
+	#Undeploy
+	preRun?:  [...#BuildCommand]
+	postRun?: [...#BuildCommand]
+}
+
 #BuildPhase: {
 	preRun?:  [...#BuildCommand]
 	postRun?: [...#BuildCommand]
