@@ -10,8 +10,9 @@ config: pipelines.#PipelineFile & {
 		"BWS_ACCESS_TOKEN",
 	]
 
-	// NOTE: connections require nitrocli schema > v0.0.19. Once a new tag
-	// is published, bump cue.mod/module.cue and uncomment.
+	// NOTE: connections, undeploy, releaseName, and connection references
+	// require nitrocli schema > v0.0.19. Once a new tag is published,
+	// bump cue.mod/module.cue and uncomment the blocks below.
 	//
 	// connections: {
 	// 	"deploy-aws": {
@@ -25,7 +26,7 @@ config: pipelines.#PipelineFile & {
 	// 				accessKeyIDVar:     "AWS_DEPLOY_ACCESS_KEY_ID"
 	// 				secretAccessKeyVar: "AWS_DEPLOY_SECRET_ACCESS_KEY"
 	// 			}
-	// 			uat: {method: "assume-role", roleArn: "arn:aws:iam::222222222222:role/nitro-uat"}
+	// 			uat:  {method: "assume-role", roleArn: "arn:aws:iam::222222222222:role/nitro-uat"}
 	// 			prod: {method: "assume-role", roleArn: "arn:aws:iam::333333333333:role/nitro-prod"}
 	// 		}
 	// 	}
@@ -61,9 +62,8 @@ config: pipelines.#PipelineFile & {
 			priority: 2
 			region:   "eu-central-1"
 			envs:     ["prod"]
-			// With connections (schema > v0.0.19), use:
+			// With connections (schema > v0.0.19), add:
 			//   connection: "deploy-aws"
-			// instead of credentialsFromVars. The connection handles auth.
 			variables: [
 				{name: "DB_CONNECTION_STRING", path: "prod/database/connection", secret: true},
 				{name: "DB_USERNAME", path: "prod/database/credentials", key: "username", secret: true},
@@ -235,6 +235,11 @@ config: pipelines.#PipelineFile & {
 					resources: limits: {cpu: "1000m", memory: "1Gi"}
 				}
 			}
+			// undeploy: {
+			// 	type:        "helm"
+			// 	releaseName: "api-gateway"
+			// 	namespace:   "production"
+			// }
 		}
 	}
 }
