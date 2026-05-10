@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
 )
 
 // ResolvedConnection is implemented by every cloud-specific resolved connection.
@@ -40,7 +41,15 @@ func (cr *ConnectionResolver) Resolve(ctx context.Context, connections map[strin
 
 	cr.resolvedClients = make(map[string]ResolvedConnection, len(connections))
 
-	for name, conn := range connections {
+	// Resolve in deterministic order, with self-contained connections (no
+	// auth, or auth=static) first and dependent ones (auth=assume-role)
+	// last. This way assume-role connections see AWS_* in the shared vars
+	// map populated by exportEnv:true static connections, and the operator
+	// never has to export shell creds manually.
+	order := sortedConnectionNames(connections, envName)
+
+	for _, name := range order {
+		conn := connections[name]
 		if !connectionAppliesToEnv(conn, envName) {
 			continue
 		}
@@ -136,4 +145,40 @@ func connectionAppliesToEnv(conn *Connection, envName string) bool {
 		}
 	}
 	return false
+}
+
+// sortedConnectionNames returns connection names ordered by resolution
+// phase, then alphabetically. Phase 0 = self-contained (no auth, or auth
+// is static for envName); phase 1 = dependent (auth=assume-role). The
+// alphabetical tiebreak makes the order deterministic across runs.
+func sortedConnectionNames(connections map[string]*Connection, envName string) []string {
+	names := make([]string, 0, len(connections))
+	for name := range connections {
+		names = append(names, name)
+	}
+	sort.SliceStable(names, func(i, j int) bool {
+		pi := connectionPhase(connections[names[i]], envName)
+		pj := connectionPhase(connections[names[j]], envName)
+		if pi != pj {
+			return pi < pj
+		}
+		return names[i] < names[j]
+	})
+	return names
+}
+
+// connectionPhase returns 0 for connections that can resolve standalone
+// and 1 for ones that need bootstrap creds in vars (assume-role today).
+func connectionPhase(conn *Connection, envName string) int {
+	if conn == nil || conn.Type != "aws" {
+		return 0
+	}
+	auth := conn.Auth[envName]
+	if auth == nil {
+		return 0
+	}
+	if auth.Method == "assume-role" {
+		return 1
+	}
+	return 0
 }

@@ -50,7 +50,7 @@ func resolveAWSConnection(ctx context.Context, name string, conn *Connection, en
 
 	switch auth.Method {
 	case "assume-role":
-		return resolveAssumeRole(ctx, name, conn.Region, auth)
+		return resolveAssumeRole(ctx, name, conn.Region, auth, vars)
 	case "static":
 		return resolveStaticAuth(ctx, name, conn.Region, auth, vars)
 	default:
@@ -58,9 +58,33 @@ func resolveAWSConnection(ctx context.Context, name string, conn *Connection, en
 	}
 }
 
-func resolveAssumeRole(ctx context.Context, name, region string, auth *ConnectionAuth) (*AWSResolvedConn, error) {
-	// Load SDK default config for bootstrap (env vars, profile, IMDS).
-	baseCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+func resolveAssumeRole(ctx context.Context, name, region string, auth *ConnectionAuth, vars map[string]string) (*AWSResolvedConn, error) {
+	// Bootstrap creds for STS:AssumeRole come from one of two places:
+	//
+	//   1. vars["AWS_ACCESS_KEY_ID"] — populated by an earlier-resolved
+	//      static connection with exportEnv:true. This lets a pipeline
+	//      declare static keys ONCE and elevate to roles for specific
+	//      commands, without forcing the operator to export AWS_* in the
+	//      shell. Connections.go orders resolution so static phases run
+	//      before assume-role phases, so this is reliable.
+	//
+	//   2. SDK default chain (env, profile, IMDS, container endpoint) —
+	//      the fallback. Works in CodeBuild (container creds) or when the
+	//      operator already has AWS_PROFILE / AWS_* in their shell.
+	var baseCfg awsv2.Config
+	var err error
+	if ak := vars["AWS_ACCESS_KEY_ID"]; ak != "" {
+		sk := vars["AWS_SECRET_ACCESS_KEY"]
+		st := vars["AWS_SESSION_TOKEN"] // optional; may be empty
+		baseCfg, err = awsconfig.LoadDefaultConfig(ctx,
+			awsconfig.WithRegion(region),
+			awsconfig.WithCredentialsProvider(
+				credentials.NewStaticCredentialsProvider(ak, sk, st),
+			),
+		)
+	} else {
+		baseCfg, err = awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("connection %q: failed to load base AWS config for assume-role: %w", name, err)
 	}
